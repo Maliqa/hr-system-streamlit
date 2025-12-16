@@ -37,40 +37,5 @@ def init_db():
     )
     """)
 
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS holidays (
-        date DATE PRIMARY KEY,
-        description TEXT
-    )
-    """)
-
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS leave_requests (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        start_date DATE,
-        end_date DATE,
-        leave_type TEXT,
-        days INTEGER,
-        status TEXT,
-        approver_id INTEGER,
-        rejection_reason TEXT,
-        created_at DATE
-    )
-    """)
-
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS changeoff_claims (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        category TEXT,
-        start_date DATE,
-        end_date DATE,
-        daily_hours INTEGER,
-        calculated_co REAL,
-        status TEXT
-    )
-    """)
-
     conn.commit()
     conn.close()
