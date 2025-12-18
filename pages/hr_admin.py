@@ -184,11 +184,23 @@ elif menu == "🧮 Edit Saldo Cuti":
         WHERE user_id=?
     """, (user_id,)).fetchone()
 
+# 🔧 AUTO CREATE SALDO JIKA BELUM ADA
+    if saldo is None:
+        conn.execute("""
+            INSERT INTO leave_balance (user_id, last_year, current_year, change_off, sick_no_doc)
+            VALUES (?, 0, 0, 0, 0)
+        """, (user_id,))
+        conn.commit()
+
+        saldo = (0, 0, 0, 0)
+
+
+
     with st.form("edit_saldo"):
-        last_year = st.number_input("Saldo Last Year", value=saldo[0], min_value=0)
-        current_year = st.number_input("Saldo Current Year", value=saldo[1], min_value=0)
+        last_year = st.number_input("Saldo Last Year", value=int(saldo[0]), min_value=0)
+        current_year = st.number_input("Saldo Current Year", value=int(saldo[1]), min_value=0)
         change_off = st.number_input("Saldo Change Off", value=float(saldo[2]), min_value=0.0)
-        sick = st.number_input("Sakit Tanpa Surat Dokter", value=saldo[3], min_value=0, max_value=6)
+        sick = st.number_input("Sakit Tanpa Surat Dokter", value=float(saldo[3]), min_value=0, max_value=6)
 
         submit = st.form_submit_button("Update Saldo")
 
