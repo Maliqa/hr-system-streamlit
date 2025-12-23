@@ -1,62 +1,77 @@
 import streamlit as st
-import pandas as pd
-from datetime import timedelta
+from datetime import date, timedelta
+from utils.api import api_get, api_post
 from core.db import get_conn
-from core.auth import require_role, logout
+from core.leave_engine import run_leave_engine
+from core.leave_calculation import calculate_leave_days
+# ======================================================
+# PAGE CONFIG + HIDE SIDEBAR
+# ======================================================
+st.set_page_config(page_title="Employee Dashboard", layout="wide")
+st.markdown("""
+<style>
+section[data-testid="stSidebar"] { display: none; }
+</style>
+""", unsafe_allow_html=True)
 
-# =========================
-# AUTH
-# =========================
-require_role("employee")
+# ======================================================
+# AUTH GUARD (FASTAPI)
+# ======================================================
+me = api_get("/me", timeout=5)
+if not (me.status_code == 200 and me.json()):
+    st.switch_page("app.py")
 
+payload = me.json()
+if payload["role"] != "employee":
+    st.error("Unauthorized")
+    st.stop()
+
+user_id = payload["user_id"]
+
+# ======================================================
+# AUTO CUTI ENGINE (SYSTEM JOB)
+# ======================================================
+run_leave_engine()
+
+# ======================================================
+# DB
+# ======================================================
+conn = get_conn()
+cur = conn.cursor()
+
+# ======================================================
+# HEADER
+# ======================================================
 st.title("👤 Employee Dashboard")
 
-# Logout
-col1, col2 = st.columns([8, 2])
-with col2:
-    if st.button("🚪 Logout"):
-        logout()
+if st.button("Logout"):
+    api_post("/logout")
+    st.switch_page("app.py")
 
-conn = get_conn()
-user_id = st.session_state["user_id"]
-
-# =========================
-# MENU
-# =========================
 menu = st.radio(
     "Menu",
     ["📄 Profile & Saldo", "➕ Submit Leave", "📜 Leave History"],
     horizontal=True
 )
 
-# =========================
-# FETCH PROFILE
-# =========================
-profile = conn.execute("""
+# ======================================================
+# FETCH DATA
+# ======================================================
+user = cur.execute("""
     SELECT nik, name, email, role, join_date, permanent_date
-    FROM users
-    WHERE id=?
+    FROM users WHERE id=?
 """, (user_id,)).fetchone()
 
-# =========================
-# FETCH SALDO (SAFE)
-# =========================
-saldo = conn.execute("""
+saldo = cur.execute("""
     SELECT last_year, current_year, change_off, sick_no_doc
-    FROM leave_balance
-    WHERE user_id=?
+    FROM leave_balance WHERE user_id=?
 """, (user_id,)).fetchone()
 
-# Auto-create saldo jika belum ada
-if saldo is None:
-    conn.execute("""
-        INSERT INTO leave_balance (user_id, last_year, current_year, change_off, sick_no_doc)
-        VALUES (?, 0, 0, 0, 0)
-    """, (user_id,))
-    conn.commit()
-    saldo = (0, 0, 0, 0)
-
+nik, name, email, role, join_date, permanent_date = user
 last_year, current_year, change_off, sick_no_doc = saldo
+
+today = date.today()
+ly_status = "expired" if today.month > 6 else "valid until 30 Jun"
 
 # ======================================================
 # PROFILE & SALDO
@@ -64,31 +79,32 @@ last_year, current_year, change_off, sick_no_doc = saldo
 if menu == "📄 Profile & Saldo":
     st.subheader("👤 Profile")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.text_input("NIK", profile[0], disabled=True)
-        st.text_input("Name", profile[1], disabled=True)
-        st.text_input("Email", profile[2], disabled=True)
-    with col2:
-        st.text_input("Role", profile[3], disabled=True)
-        st.text_input("Join Date", profile[4], disabled=True)
-        st.text_input(
-            "Permanent Date",
-            profile[5] if profile[5] else "-",
-            disabled=True
-        )
+    c1, c2 = st.columns(2)
+    with c1:
+        st.text_input("NIK", nik, disabled=True)
+        st.text_input("Name", name, disabled=True)
+        st.text_input("Email", email, disabled=True)
+    with c2:
+        st.text_input("Role", role, disabled=True)
+        st.text_input("Join Date", join_date, disabled=True)
+        st.text_input("Permanent Date", permanent_date or "-", disabled=True)
 
-    st.subheader("🧮 Leave Balance")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Last Year", last_year)
-    c2.metric("Current Year", current_year)
-    c3.metric("Change Off", change_off)
-    c4.metric("Sick (No Doc)", sick_no_doc)
+    st.divider()
+    st.subheader("📊 Leave Balance")
+
+    b1, b2, b3, b4 = st.columns(4)
+    b1.metric("Last Year", last_year, help=f"Last Year leave is {ly_status}")
+    b2.metric("Current Year", current_year, help="+1 day every 1st of the month")
+    b3.metric("Change Off", change_off, help="Claimable per semester")
+    b4.metric("Sick (No Doc)", sick_no_doc, help="Max 6 days per year")
 
     st.info(
-        "Saldo cuti otomatis digunakan dari Last Year terlebih dahulu, "
-        "kemudian Current Year. Jika saldo habis, gunakan Change Off."
+        "Leave deduction order:\n"
+        "- Last Year (valid until 30 June)\n"
+        "- Current Year (+1 every month)\n"
+        "- Change Off (from overtime)"
     )
+    st.caption("Next leave accrual: +1 day on the 1st of next month")
 
 # ======================================================
 # SUBMIT LEAVE
@@ -97,59 +113,42 @@ elif menu == "➕ Submit Leave":
     st.subheader("➕ Submit Leave")
 
     leave_type = st.selectbox(
-        "Jenis Cuti",
-        ["Annual Leave", "Change Off", "Sick (No Doc)"]
+        "Leave Type",
+        ["Personal Leave", "Change Off", "Sick (No Doc)"]
     )
 
-    col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input("Tanggal Mulai")
-    with col2:
-        end_date = st.date_input("Tanggal Selesai")
+    c1, c2 = st.columns(2)
+    with c1:
+        start_date = st.date_input("Start Date")
+    with c2:
+        end_date = st.date_input("End Date")
 
-    reason = st.text_area("Alasan")
+    reason = st.text_area("Reason")
 
-    # Validasi tanggal
     if end_date < start_date:
-        st.error("Tanggal selesai tidak boleh lebih kecil dari tanggal mulai")
+        st.error("End date cannot be earlier than start date")
+        st.stop()
+    total_days = calculate_leave_days(start_date, end_date)
+
+    if total_days == 0:
+        st.error("No working day selected (weekend / holiday only)")
         st.stop()
 
-    # Hitung hari kerja (exclude weekend)
-    total_days = 0
-    current = start_date
-    while current <= end_date:
-        if current.weekday() < 5:  # Senin - Jumat
-            total_days += 1
-        current += timedelta(days=1)
+    st.info(f"Total working days requested: **{total_days}**")
 
-    st.info(f"Total hari kerja yang diajukan: **{total_days} hari**")
+    st.warning(
+        "This leave will be deducted automatically:\n"
+        "Last Year → Current Year → Change Off"
+    )
+
+    if today.month > 6 and last_year > 0:
+        st.warning("Last Year leave has expired after 30 June and will not be used.")
 
     if st.button("Submit Leave"):
-        if total_days <= 0:
-            st.error("Tidak ada hari kerja yang diajukan")
-            st.stop()
-
-        # VALIDASI SALDO
-        if leave_type == "Annual Leave":
-            if total_days > (last_year + current_year):
-                st.error("Saldo cuti tahunan tidak mencukupi")
-                st.stop()
-
-        elif leave_type == "Change Off":
-            if total_days > change_off:
-                st.error("Saldo Change Off tidak mencukupi")
-                st.stop()
-
-        elif leave_type == "Sick (No Doc)":
-            if sick_no_doc + total_days > 6:
-                st.error("Melebihi batas sakit tanpa surat dokter (6 hari)")
-                st.stop()
-
-        # INSERT REQUEST (TANPA POTONG SALDO)
-        conn.execute("""
+        cur.execute("""
             INSERT INTO leave_requests
             (user_id, leave_type, start_date, end_date, total_days, reason, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'pending', datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, 'submitted', DATE('now'))
         """, (
             user_id,
             leave_type,
@@ -159,8 +158,7 @@ elif menu == "➕ Submit Leave":
             reason
         ))
         conn.commit()
-
-        st.success("Leave berhasil diajukan dan menunggu approval")
+        st.success("Leave submitted and waiting for approval")
         st.rerun()
 
 # ======================================================
@@ -169,14 +167,45 @@ elif menu == "➕ Submit Leave":
 elif menu == "📜 Leave History":
     st.subheader("📜 Leave History")
 
-    df = pd.read_sql("""
-        SELECT start_date, end_date, leave_type, total_days, status, created_at
+    rows = cur.execute("""
+        SELECT
+            start_date,
+            end_date,
+            leave_type,
+            total_days,
+            status,
+            created_at
         FROM leave_requests
-        WHERE user_id=?
+        WHERE user_id = ?
         ORDER BY created_at DESC
-    """, conn, params=(user_id,))
+    """, (user_id,)).fetchall()
 
-    if df.empty:
-        st.info("Belum ada pengajuan cuti")
+    if not rows:
+        st.info("No leave history")
     else:
-        st.dataframe(df, width="stretch")
+        import pandas as pd
+
+        df = pd.DataFrame(
+            rows,
+            columns=[
+                "Start Date",
+                "End Date",
+                "Leave Type",
+                "Days",
+                "Status",
+                "Submitted At"
+            ]
+        )
+
+        # Optional: format date columns (lebih rapi)
+        for col in ["Start Date", "End Date", "Submitted At"]:
+            df[col] = pd.to_datetime(df[col]).dt.strftime("%Y-%m-%d")
+
+        st.dataframe(
+            df,
+            width="stretch",
+            hide_index=True
+        )
+
+
+conn.close()

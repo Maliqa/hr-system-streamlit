@@ -1,29 +1,39 @@
 import hashlib
+import sqlite3
 import streamlit as st
 from core.db import get_conn
+from passlib.hash import bcrypt
 
 def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+    return bcrypt.hash(password)
 
 def verify_password(password: str, hashed: str) -> bool:
-    return hashlib.sha256(password.encode()).hexdigest() == hashed
+    return bcrypt.verify(password, hashed)
+
+
 
 def login(email, password):
     conn = get_conn()
     c = conn.cursor()
 
-    c.execute(
-        "SELECT id, role, password_hash FROM users WHERE email=?",
-        (email,)
-    )
-    user = c.fetchone()
+    c.execute("""
+        SELECT id, role, password_hash
+        FROM users
+        WHERE email = ?
+    """, (email,))
 
-    if user and verify_password(password, user[2]):
-        st.session_state["user_id"] = user[0]
-        st.session_state["role"] = user[1]
-        return True
+    row = c.fetchone()
+    conn.close()
 
-    return False
+    if not row:
+        return None
+
+    user_id, role, password_hash = row
+
+    if bcrypt.verify(password, password_hash):
+        return user_id, role
+
+    return None
 
 def require_role(role):
     current_role = st.session_state.get("role")

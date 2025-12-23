@@ -1,177 +1,101 @@
 import streamlit as st
-import pandas as pd
-from datetime import datetime
+from utils.api import api_get, api_post
 from core.db import get_conn
-from core.auth import require_role, logout
+from core.leave_engine import run_leave_engine
+from datetime import date
 
-# =========================
+st.set_page_config(page_title="Manager Dashboard", layout="wide")
+st.markdown("""
+<style>
+section[data-testid="stSidebar"] { display: none; }
+</style>
+""", unsafe_allow_html=True)
+
 # AUTH
-# =========================
-require_role("manager")
+me = api_get("/me", timeout=5)
+if not (me.status_code == 200 and me.json()):
+    st.switch_page("app.py")
 
-st.title("👔 Manager Dashboard")
+payload = me.json()
+if payload["role"] != "manager":
+    st.error("Unauthorized")
+    st.stop()
 
-# Logout
-col1, col2 = st.columns([8, 2])
-with col2:
-    if st.button("🚪 Logout"):
-        logout()
+manager_id = payload["user_id"]
+
+# AUTO ENGINE
+run_leave_engine()
 
 conn = get_conn()
-manager_id = st.session_state["user_id"]
 
-# =========================
-# MENU
-# =========================
-menu = st.radio(
-    "Menu",
-    ["⏳ Pending Leave Approval", "📜 Approval History"],
-    horizontal=True
-)
+st.title("👔 Manager Dashboard")
+if st.button("Logout"):
+    api_post("/logout")
+    st.switch_page("app.py")
 
-# ======================================================
-# PENDING APPROVAL
-# ======================================================
-if menu == "⏳ Pending Leave Approval":
-    st.subheader("⏳ Pending Leave Approval")
+menu = st.radio("Menu", ["⏳ Pending Approval", "📜 Approval History"], horizontal=True)
 
-    df = pd.read_sql("""
-        SELECT
-            lr.id,
-            u.name AS employee_name,
-            lr.leave_type,
-            lr.start_date,
-            lr.end_date,
-            lr.total_days,
-            lr.reason
+# PENDING
+if menu == "⏳ Pending Approval":
+    rows = conn.execute("""
+        SELECT lr.id, u.name, lr.leave_type, lr.start_date, lr.end_date, lr.total_days, lr.reason
         FROM leave_requests lr
-        JOIN users u ON lr.user_id = u.id
-        WHERE lr.status = 'pending'
+        JOIN users u ON u.id = lr.user_id
+        WHERE lr.status='submitted'
         ORDER BY lr.created_at
-    """, conn)
+    """).fetchall()
 
-    if df.empty:
-        st.info("Tidak ada leave request yang menunggu approval")
+    if not rows:
+        st.info("No pending leave")
     else:
-        st.dataframe(df, width="stretch")
+        for r in rows:
+            leave_id, emp, typ, s, e, d, reason = r
+            with st.expander(f"{emp} | {typ} | {d} day(s)"):
+                st.write(f"{s} → {e}")
+                st.write(reason or "-")
 
-        selected_id = st.selectbox(
-            "Pilih Leave Request",
-            df["id"].tolist()
-        )
+                action = st.radio("Action", ["Approve", "Reject"], key=f"a_{leave_id}", horizontal=True)
+                reject_reason = st.text_area("Reject reason", key=f"r_{leave_id}") if action == "Reject" else None
 
-        action = st.radio(
-            "Action",
-            ["Approve", "Reject"],
-            horizontal=True
-        )
-
-        reject_reason = None
-        if action == "Reject":
-            reject_reason = st.text_area("Alasan Reject (wajib)")
-
-        if st.button("Submit Decision"):
-            # Fetch leave request
-            lr = conn.execute("""
-                SELECT user_id, leave_type, total_days
-                FROM leave_requests
-                WHERE id=?
-            """, (selected_id,)).fetchone()
-
-            user_id, leave_type, total_days = lr
-
-            # Fetch saldo
-            saldo = conn.execute("""
-                SELECT last_year, current_year, change_off, sick_no_doc
-                FROM leave_balance
-                WHERE user_id=?
-            """, (user_id,)).fetchone()
-
-            last_year, current_year, change_off, sick_no_doc = saldo
-
-            if action == "Approve":
-                # =========================
-                # POTONG SALDO
-                # =========================
-                if leave_type == "Annual Leave":
-                    if total_days <= last_year:
-                        last_year -= total_days
+                if st.button("Submit", key=f"s_{leave_id}"):
+                    if action == "Approve":
+                        conn.execute("""
+                            UPDATE leave_requests
+                            SET status='manager_approved', manager_id=?, manager_approved_at=DATE('now')
+                            WHERE id=?
+                        """, (manager_id, leave_id))
                     else:
-                        remaining = total_days - last_year
-                        last_year = 0
-                        current_year -= remaining
+                        conn.execute("""
+                            UPDATE leave_requests
+                            SET status='manager_rejected', manager_id=?, manager_approved_at=DATE('now'), reason=?
+                            WHERE id=?
+                        """, (manager_id, reject_reason, leave_id))
+                    conn.commit()
+                    st.success("Decision saved")
+                    st.rerun()
 
-                elif leave_type == "Change Off":
-                    change_off -= total_days
-
-                elif leave_type == "Sick (No Doc)":
-                    sick_no_doc += total_days
-
-                # Update saldo
-                conn.execute("""
-                    UPDATE leave_balance
-                    SET last_year=?, current_year=?, change_off=?, sick_no_doc=?, updated_at=DATE('now')
-                    WHERE user_id=?
-                """, (
-                    last_year,
-                    current_year,
-                    change_off,
-                    sick_no_doc,
-                    user_id
-                ))
-
-                # Update leave request
-                conn.execute("""
-                    UPDATE leave_requests
-                    SET status='approved', approved_by=?, approved_at=DATETIME('now')
-                    WHERE id=?
-                """, (manager_id, selected_id))
-
-                conn.commit()
-                st.success("Leave berhasil di-APPROVE dan saldo dipotong")
-                st.rerun()
-
-            else:  # Reject
-                if not reject_reason:
-                    st.error("Alasan reject wajib diisi")
-                    st.stop()
-
-                conn.execute("""
-                    UPDATE leave_requests
-                    SET status='rejected', approved_by=?, approved_at=DATETIME('now'), reason=?
-                    WHERE id=?
-                """, (
-                    manager_id,
-                    reject_reason,
-                    selected_id
-                ))
-
-                conn.commit()
-                st.success("Leave berhasil di-REJECT")
-                st.rerun()
-
-# ======================================================
-# APPROVAL HISTORY
-# ======================================================
-elif menu == "📜 Approval History":
-    st.subheader("📜 Approval History")
-
-    df = pd.read_sql("""
-        SELECT
-            u.name AS employee_name,
-            lr.leave_type,
-            lr.start_date,
-            lr.end_date,
-            lr.total_days,
-            lr.status,
-            lr.approved_at
+# HISTORY
+else:
+    rows = conn.execute("""
+        SELECT u.name, lr.leave_type, lr.start_date, lr.end_date, lr.total_days, lr.status, lr.manager_approved_at
         FROM leave_requests lr
-        JOIN users u ON lr.user_id = u.id
-        WHERE lr.status IN ('approved', 'rejected')
-        ORDER BY lr.approved_at DESC
-    """, conn)
+        JOIN users u ON u.id = lr.user_id
+        WHERE lr.status IN ('manager_approved','manager_rejected','hr_approved','hr_rejected')
+        ORDER BY lr.manager_approved_at DESC
+    """).fetchall()
 
-    if df.empty:
-        st.info("Belum ada history approval")
-    else:
-        st.dataframe(df, width="stretch")
+    st.dataframe(
+        rows,
+        width="stretch",
+        column_config={
+            0: "Employee",
+            1: "Type",
+            2: "Start",
+            3: "End",
+            4: "Days",
+            5: "Status",
+            6: "Approved At"
+        }
+    )
+
+conn.close()
