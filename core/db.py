@@ -1,17 +1,18 @@
 import sqlite3
 import os
-
-DB_PATH = "data/hr.db"
-
+# =========================
+# ABSOLUTE PROJECT ROOT
+# =========================
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+DB_PATH = os.path.join(DATA_DIR, "hr.db")
 
 # =========================
 # CONNECTION
 # =========================
 def get_conn():
-    os.makedirs("data", exist_ok=True)
+    os.makedirs(DATA_DIR, exist_ok=True)
     return sqlite3.connect(DB_PATH, check_same_thread=False)
-
-
 # =========================
 # INIT DATABASE
 # =========================
@@ -19,9 +20,6 @@ def init_db():
     conn = get_conn()
     c = conn.cursor()
 
-    # =========================
-    # USERS
-    # =========================
     c.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,9 +35,6 @@ def init_db():
     )
     """)
 
-    # =========================
-    # LEAVE BALANCE
-    # =========================
     c.execute("""
     CREATE TABLE IF NOT EXISTS leave_balance (
         user_id INTEGER PRIMARY KEY,
@@ -52,9 +47,6 @@ def init_db():
     )
     """)
 
-    # =========================
-    # LEAVE REQUESTS (🔥 WAJIB)
-    # =========================
     c.execute("""
     CREATE TABLE IF NOT EXISTS leave_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,7 +56,7 @@ def init_db():
         end_date DATE NOT NULL,
         total_days INTEGER NOT NULL,
         reason TEXT,
-        status TEXT DEFAULT 'pending',
+        status TEXT DEFAULT 'submitted',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         approved_by INTEGER,
         approved_at DATETIME,
@@ -73,9 +65,6 @@ def init_db():
     )
     """)
 
-    # =========================
-    # HOLIDAYS (untuk validasi cuti)
-    # =========================
     c.execute("""
     CREATE TABLE IF NOT EXISTS holidays (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,9 +73,6 @@ def init_db():
     )
     """)
 
-    # =========================
-    # CHANGE OFF CLAIMS (NEXT)
-    # =========================
     c.execute("""
     CREATE TABLE IF NOT EXISTS change_off_claims (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,7 +83,7 @@ def init_db():
         location TEXT,
         daily_hours REAL,
         attachment TEXT,
-        status TEXT DEFAULT 'pending',
+        status TEXT DEFAULT 'submitted',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         approved_by INTEGER,
         approved_at DATETIME,

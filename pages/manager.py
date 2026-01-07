@@ -4,14 +4,43 @@ from core.db import get_conn
 from core.leave_engine import run_leave_engine
 from utils.pdf_preview import preview_pdf
 
+# ======================================================
+# PAGE CONFIG
+# ======================================================
 st.set_page_config(page_title="Manager Dashboard", layout="wide")
 st.markdown("""
 <style>
 section[data-testid="stSidebar"] { display: none; }
+.card {
+    background-color: #0e1117;
+    border: 1px solid #2a2e35;
+    border-radius: 14px;
+    padding: 18px;
+    margin-bottom: 18px;
+}
+.card h4 {
+    margin: 0;
+}
+.badge {
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: bold;
+}
+.badge-pending { background: #facc15; color: #000; }
+.badge-approved { background: #22c55e; color: #000; }
+.badge-rejected { background: #ef4444; color: #fff; }
+.meta {
+    color: #9ca3af;
+    font-size: 13px;
+    margin-top: 4px;
+}
 </style>
 """, unsafe_allow_html=True)
 
-# ================= SESSION =================
+# ======================================================
+# AUTH
+# ======================================================
 me = api_get("/me")
 if me.status_code != 200:
     st.session_state.clear()
@@ -19,18 +48,21 @@ if me.status_code != 200:
     st.stop()
 
 user = me.json()
-manager_id = user.get("id")
-role = user.get("role")
-
-if role != "manager":
-    st.error("Access denied")
+if user.get("role") != "manager":
+    st.error("❌ Access denied")
     st.stop()
 
-# ================= ENGINE =================
-run_leave_engine()
+manager_id = user.get("id")
 
+# ======================================================
+# ENGINE
+# ======================================================
+run_leave_engine()
 conn = get_conn()
 
+# ======================================================
+# HEADER
+# ======================================================
 st.title("👔 Manager Dashboard")
 if st.button("Logout"):
     api_post("/logout")
@@ -47,14 +79,17 @@ MENU = st.radio(
 # ======================================================
 if MENU == "⏳ Pending Approval":
 
-    SUB = st.radio(
+    TAB = st.radio(
         "Approval Type",
         ["📝 Leave Requests", "📦 Change Off Claims"],
         horizontal=True
     )
 
-    # ---------- LEAVE ----------
-    if SUB == "📝 Leave Requests":
+    # ============================
+    # LEAVE REQUESTS
+    # ============================
+    if TAB == "📝 Leave Requests":
+
         rows = conn.execute("""
             SELECT lr.id, u.name, lr.leave_type,
                    lr.start_date, lr.end_date,
@@ -66,130 +101,146 @@ if MENU == "⏳ Pending Approval":
         """).fetchall()
 
         if not rows:
-            st.info("No pending leave requests.")
+            st.info("🎉 No pending leave requests.")
         else:
             for r in rows:
-                leave_id, emp, typ, s, e, d, reason = r
-                with st.expander(f"{emp} | {typ} | {d} day(s)"):
-                    st.write(f"{s} → {e}")
-                    st.write(reason or "-")
+                leave_id, emp, typ, s, e, days, reason = r
 
-                    action = st.radio(
-                        "Action",
-                        ["Approve", "Reject"],
-                        key=f"act_l_{leave_id}",
-                        horizontal=True
-                    )
-                    reject_reason = (
-                        st.text_area("Reject reason", key=f"rej_l_{leave_id}")
-                        if action == "Reject" else None
-                    )
+                st.markdown(f"""
+                <div class="card">
+                    <h4>👤 {emp} <span class="badge badge-pending">PENDING</span></h4>
+                    <div class="meta">{typ}</div>
+                    <div class="meta">📅 {s} → {e} • <b>{days} day(s)</b></div>
+                    <p>{reason or "-"}</p>
+                </div>
+                """, unsafe_allow_html=True)
 
-                    if st.button("Submit", key=f"sub_l_{leave_id}"):
-                        if action == "Approve":
-                            conn.execute("""
-                                UPDATE leave_requests
-                                SET status='manager_approved',
-                                    manager_id=?,
-                                    manager_approved_at=DATE('now')
-                                WHERE id=?
-                            """, (manager_id, leave_id))
-                        else:
-                            conn.execute("""
-                                UPDATE leave_requests
-                                SET status='manager_rejected',
-                                    manager_id=?,
-                                    manager_approved_at=DATE('now'),
-                                    reason=?
-                                WHERE id=?
-                            """, (manager_id, reject_reason, leave_id))
+                col1, col2 = st.columns(2)
 
+                with col1:
+                    if st.button("✅ Approve", key=f"leave_ok_{leave_id}"):
+                        conn.execute("""
+                            UPDATE leave_requests
+                            SET status='manager_approved',
+                                approved_by=?,
+                                approved_at=CURRENT_TIMESTAMP
+                            WHERE id=?
+                        """, (manager_id, leave_id))
                         conn.commit()
-                        st.success("Decision saved")
+                        st.success("Approved")
                         st.rerun()
 
-    # ---------- CHANGE OFF ----------
-    if SUB == "📦 Change Off Claims":
+                with col2:
+                    if st.button("❌ Reject", key=f"leave_no_{leave_id}"):
+                        conn.execute("""
+                            UPDATE leave_requests
+                            SET status='manager_rejected',
+                                approved_by=?,
+                                approved_at=CURRENT_TIMESTAMP
+                            WHERE id=?
+                        """, (manager_id, leave_id))
+                        conn.commit()
+                        st.warning("Rejected")
+                        st.rerun()
+
+    # ============================
+    # CHANGE OFF CLAIMS
+    # ============================
+    if TAB == "📦 Change Off Claims":
+
         rows = conn.execute("""
-            SELECT c.id, u.name, c.work_date,
-                   c.hours, c.description, c.file_path
+            SELECT c.id, u.name, c.category, c.work_type,
+                   c.work_date, c.start_date, c.end_date,
+                   c.daily_hours, c.co_days,
+                   c.description, c.attachment
             FROM change_off_claims c
             JOIN users u ON u.id = c.user_id
             WHERE c.status='submitted'
-            ORDER BY c.work_date
+            ORDER BY c.created_at
         """).fetchall()
 
         if not rows:
-            st.info("No pending change off claims.")
+            st.info("🎉 No pending change off claims.")
         else:
             for r in rows:
-                cid, name, wdate, hours, desc, path = r
-                with st.expander(f"{name} | {wdate} | {hours} hours"):
-                    st.write(desc)
+                (
+                    cid, name, category, work_type,
+                    work_date, start_date, end_date,
+                    hours, co_days, desc, attachment
+                ) = r
 
-                    if st.checkbox("👀 Preview PDF", key=f"pv_{cid}"):
-                        preview_pdf(path)
+                period = work_date or f"{start_date} → {end_date}"
 
-                    col1, col2 = st.columns(2)
+                st.markdown(f"""
+                <div class="card">
+                    <h4>👤 {name} <span class="badge badge-pending">PENDING</span></h4>
+                    <div class="meta">{category} • {work_type}</div>
+                    <div class="meta">📅 {period}</div>
+                    <div class="meta">⏱ {hours or '-'} hour(s)</div>
+                    <div class="meta">📦 CO: <b>{co_days} day(s)</b></div>
+                    <p>{desc or "-"}</p>
+                </div>
+                """, unsafe_allow_html=True)
 
-                    with col1:
-                        if st.button("✅ Approve", key=f"ok_{cid}"):
-                            conn.execute("""
-                                UPDATE change_off_claims
-                                SET status='manager_approved'
-                                WHERE id=?
-                            """, (cid,))
-                            conn.commit()
-                            st.success("Approved")
-                            st.rerun()
+                if attachment:
+                    if st.checkbox("👀 Preview Attachment", key=f"pv_{cid}"):
+                        preview_pdf(attachment)
 
-                    with col2:
-                        if st.button("❌ Reject", key=f"no_{cid}"):
-                            conn.execute("""
-                                UPDATE change_off_claims
-                                SET status='manager_rejected'
-                                WHERE id=?
-                            """, (cid,))
-                            conn.commit()
-                            st.warning("Rejected")
-                            st.rerun()
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    if st.button("✅ Approve", key=f"co_ok_{cid}"):
+                        conn.execute("""
+                            UPDATE change_off_claims
+                            SET status='manager_approved',
+                                approved_by=?,
+                                approved_at=CURRENT_TIMESTAMP
+                            WHERE id=?
+                        """, (manager_id, cid))
+                        conn.commit()
+                        st.success("Approved")
+                        st.rerun()
+
+                with col2:
+                    if st.button("❌ Reject", key=f"co_no_{cid}"):
+                        conn.execute("""
+                            UPDATE change_off_claims
+                            SET status='manager_rejected',
+                                approved_by=?,
+                                approved_at=CURRENT_TIMESTAMP
+                            WHERE id=?
+                        """, (manager_id, cid))
+                        conn.commit()
+                        st.warning("Rejected")
+                        st.rerun()
 
 # ======================================================
 # 📜 APPROVAL HISTORY
 # ======================================================
 else:
-    st.subheader("Leave Approval History")
+    st.subheader("📝 Leave Approval History")
+
     rows = conn.execute("""
         SELECT u.name, lr.leave_type, lr.start_date,
                lr.end_date, lr.total_days,
-               lr.status, lr.manager_approved_at
+               lr.status, lr.approved_at
         FROM leave_requests lr
         JOIN users u ON u.id = lr.user_id
-        WHERE lr.status IN ('manager_approved','manager_rejected','hr_approved','hr_rejected')
-        ORDER BY lr.manager_approved_at DESC
+        WHERE lr.status LIKE 'manager_%' OR lr.status LIKE 'hr_%'
+        ORDER BY lr.approved_at DESC
     """).fetchall()
 
-    st.dataframe(
-        rows,
-        use_container_width=True,
-        column_config={
-            0: "Employee",
-            1: "Type",
-            2: "Start",
-            3: "End",
-            4: "Days",
-            5: "Status",
-            6: "Approved At"
-        }
-    )
+    st.dataframe(rows, use_container_width=True)
 
-    st.subheader("Change Off Approval History")
+    st.subheader("📦 Change Off Approval History")
+
     rows = conn.execute("""
-        SELECT u.name, c.work_date, c.hours, c.status
+        SELECT u.name, c.work_date, c.co_days,
+               c.status, c.approved_at
         FROM change_off_claims c
         JOIN users u ON u.id = c.user_id
-        WHERE c.status IN ('manager_approved','manager_rejected')
-        ORDER BY c.work_date DESC
+        WHERE c.status LIKE 'manager_%' OR c.status LIKE 'hr_%'
+        ORDER BY c.approved_at DESC
     """).fetchall()
 
     st.dataframe(rows, use_container_width=True)

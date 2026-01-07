@@ -1,4 +1,18 @@
+# Python
 __pycache__/
 *.pyc
 .env
-*.db
+.venv/
+venv/
+
+# Streamlit
+.streamlit/
+
+# Database
+data/*.db
+
+# Uploads
+uploads/
+
+# OS
+.DS_Store

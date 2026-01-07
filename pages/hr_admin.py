@@ -5,6 +5,9 @@ from core.db import get_conn
 from core.auth import hash_password
 from core.leave_engine import run_leave_engine
 
+# ======================================================
+# PAGE CONFIG
+# ======================================================
 st.set_page_config(page_title="HR Admin Dashboard", layout="wide")
 st.markdown("""
 <style>
@@ -12,28 +15,40 @@ section[data-testid="stSidebar"] { display: none; }
 </style>
 """, unsafe_allow_html=True)
 
+# ======================================================
 # AUTH
-me = api_get("/me", timeout=5)
-if not (me.status_code == 200 and me.json()):
+# ======================================================
+me = api_get("/me")
+if not (me.status_code == 200 and isinstance(me.json(), dict)):
+    st.session_state.clear()
     st.switch_page("app.py")
+    st.stop()
 
 payload = me.json()
-if payload["role"] != "hr":
+if payload.get("role") != "hr":
     st.error("Unauthorized")
     st.stop()
 
-hr_id = payload["user_id"]
+hr_id = payload.get("id") or payload.get("user_id")
 
-# AUTO ENGINE
+# ======================================================
+# ENGINE (ONLY ACCRUAL – NO DEDUCTION)
+# ======================================================
 run_leave_engine()
 
 conn = get_conn()
 
+# ======================================================
+# HEADER
+# ======================================================
 st.title("🏢 HR Admin Dashboard")
 if st.button("Logout"):
     api_post("/logout")
     st.switch_page("app.py")
 
+# ======================================================
+# MENU
+# ======================================================
 menu = st.radio(
     "Menu",
     [
@@ -45,10 +60,13 @@ menu = st.radio(
         "📊 Edit Saldo Cuti",
         "📅 Holiday Calendar",
         "✅ HR Leave Approval",
+        "📦 HR Change Off Final Approval",
         "🧾 Manage Leave History",
     ],
     horizontal=True
 )
+
+# ======================================================
 # COMMON DATA
 # ======================================================
 users = conn.execute("""
@@ -73,48 +91,32 @@ if menu == "➕ Create User":
         name = st.text_input("Name")
         email = st.text_input("Email")
         role = st.selectbox("Role", ["employee", "manager", "hr"])
-
-        join_date = st.date_input(
-            "Join Date",
-            min_value=date(2000, 1, 1),
-            max_value=date.today()
-        )
-
-        permanent_date = st.date_input(
-            "Permanent Date (optional)",
-            min_value=date(2000, 1, 1),
-            max_value=date.today(),
-            value=None
-        )
-
+        join_date = st.date_input("Join Date", min_value=date(2000, 1, 1))
+        permanent_date = st.date_input("Permanent Date", value=None)
         password = st.text_input("Password", type="password")
         submit = st.form_submit_button("Create User")
 
     if submit:
         conn.execute("""
-            INSERT INTO users
-            (nik, name, email, role, join_date, permanent_date, password_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO users (nik,name,email,role,join_date,permanent_date,password_hash)
+            VALUES (?,?,?,?,?,?,?)
         """, (
-            nik,
-            name,
-            email,
-            role,
+            nik, name, email, role,
             join_date.isoformat(),
             permanent_date.isoformat() if permanent_date else None,
             hash_password(password)
         ))
 
-        user_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        uid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
         conn.execute("""
             INSERT INTO leave_balance
-            (user_id, last_year, current_year, change_off, sick_no_doc)
-            VALUES (?, 0, 0, 0, 0)
-        """, (user_id,))
+            (user_id,last_year,current_year,change_off,sick_no_doc)
+            VALUES (?,0,0,0,0)
+        """, (uid,))
 
         conn.commit()
-        st.success("User berhasil dibuat")
+        st.success("User created")
         st.rerun()
 
 # ======================================================
@@ -122,71 +124,58 @@ if menu == "➕ Create User":
 # ======================================================
 elif menu == "📋 User List":
     st.subheader("📋 User List")
-
-    table = []
-    for u in users:
-        table.append({
-            "ID": u[0],
-            "NIK": u[1],
-            "Name": u[2],
-            "Email": u[3],
-            "Role": u[4],
-            "Join Date": u[5],
-            "Permanent Date": u[6] or "-"
-        })
-
-    st.dataframe(table, width="stretch")
+    st.dataframe([{
+        "ID": u[0],
+        "NIK": u[1],
+        "Name": u[2],
+        "Email": u[3],
+        "Role": u[4],
+        "Join Date": u[5],
+        "Permanent Date": u[6] or "-"
+    } for u in users], use_container_width=True)
 
 # ======================================================
 # 3. EDIT USER
 # ======================================================
 elif menu == "✏️ Edit User":
     st.subheader("✏️ Edit User")
+    selected = st.selectbox("Select User", user_map.keys())
+    uid = user_map[selected]
 
-    selected = st.selectbox("Pilih User", user_map.keys())
-    user_id = user_map[selected]
-
-    user = conn.execute("""
-        SELECT nik, name, email, role, join_date, permanent_date
+    u = conn.execute("""
+        SELECT nik,name,email,role,join_date,permanent_date
         FROM users WHERE id=?
-    """, (user_id,)).fetchone()
-
-    join_val = date.fromisoformat(user[4]) if user[4] else date.today()
-    perm_val = date.fromisoformat(user[5]) if user[5] else None
+    """,(uid,)).fetchone()
 
     with st.form("edit_user"):
-        nik = st.text_input("NIK", user[0])
-        name = st.text_input("Name", user[1])
-        email = st.text_input("Email", user[2])
+        nik = st.text_input("NIK", u[0])
+        name = st.text_input("Name", u[1])
+        email = st.text_input("Email", u[2])
         role = st.selectbox(
             "Role",
-            ["employee", "manager", "hr"],
-            index=["employee", "manager", "hr"].index(user[3])
+            ["employee","manager","hr"],
+            index=["employee","manager","hr"].index(u[3])
         )
-
-        join_date = st.date_input("Join Date", value=join_val)
-        permanent_date = st.date_input("Permanent Date", value=perm_val)
-
-        submit = st.form_submit_button("Update User")
+        join_date = st.date_input("Join Date", date.fromisoformat(u[4]))
+        permanent_date = st.date_input(
+            "Permanent Date",
+            date.fromisoformat(u[5]) if u[5] else None
+        )
+        submit = st.form_submit_button("Update")
 
     if submit:
         conn.execute("""
             UPDATE users
-            SET nik=?, name=?, email=?, role=?,
-                join_date=?, permanent_date=?
+            SET nik=?,name=?,email=?,role=?,join_date=?,permanent_date=?
             WHERE id=?
         """, (
-            nik,
-            name,
-            email,
-            role,
+            nik, name, email, role,
             join_date.isoformat(),
             permanent_date.isoformat() if permanent_date else None,
-            user_id
+            uid
         ))
-
         conn.commit()
-        st.success("User berhasil diupdate")
+        st.success("User updated")
         st.rerun()
 
 # ======================================================
@@ -194,376 +183,299 @@ elif menu == "✏️ Edit User":
 # ======================================================
 elif menu == "🔐 Reset Password":
     st.subheader("🔐 Reset Password")
+    selected = st.selectbox("Select User", user_map.keys())
+    uid = user_map[selected]
 
-    selected = st.selectbox("Pilih User", user_map.keys())
-    user_id = user_map[selected]
-
-    new_pass = st.text_input("Password Baru", type="password")
-    confirm = st.text_input("Confirm Password", type="password")
+    p1 = st.text_input("New Password", type="password")
+    p2 = st.text_input("Confirm Password", type="password")
 
     if st.button("Reset Password"):
-        if not new_pass:
-            st.error("Password tidak boleh kosong")
-        elif new_pass != confirm:
-            st.error("Password tidak cocok")
+        if not p1 or p1 != p2:
+            st.error("Password invalid")
         else:
-            conn.execute("""
-                UPDATE users SET password_hash=?
-                WHERE id=?
-            """, (hash_password(new_pass), user_id))
+            conn.execute(
+                "UPDATE users SET password_hash=? WHERE id=?",
+                (hash_password(p1), uid)
+            )
             conn.commit()
-            st.success("Password berhasil direset")
+            st.success("Password reset")
 
 # ======================================================
 # 5. DELETE USER
 # ======================================================
 elif menu == "🗑️ Delete User":
     st.subheader("🗑️ Delete User")
+    selected = st.selectbox("Select User", user_map.keys())
+    uid = user_map[selected]
 
-    selected = st.selectbox("Pilih User", user_map.keys())
-    user_id = user_map[selected]
-
-    confirm = st.checkbox("Saya yakin ingin menghapus user ini")
-
-    if st.button("DELETE USER"):
-        if confirm:
-            conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+    if st.checkbox("I understand this action is permanent"):
+        if st.button("DELETE USER"):
+            conn.execute("DELETE FROM users WHERE id=?", (uid,))
             conn.commit()
-            st.success("User berhasil dihapus")
+            st.success("User deleted")
             st.rerun()
-        else:
-            st.warning("Centang konfirmasi terlebih dahulu")
 
 # ======================================================
 # 6. EDIT SALDO CUTI
 # ======================================================
 elif menu == "📊 Edit Saldo Cuti":
     st.subheader("📊 Edit Saldo Cuti")
-
-    # =====================
-    # SELECT USER (EMPLOYEE ONLY)
-    # =====================
-    selected = st.selectbox("Pilih User", user_map.keys())
+    selected = st.selectbox("Select User", user_map.keys())
     uid = user_map[selected]
 
-    # =====================
-    # FETCH / INIT SALDO
-    # =====================
-    saldo = conn.execute("""
-        SELECT last_year, current_year, change_off, sick_no_doc
-        FROM leave_balance
-        WHERE user_id=?
-    """, (uid,)).fetchone()
+    bal = conn.execute("""
+        SELECT last_year,current_year,change_off,sick_no_doc
+        FROM leave_balance WHERE user_id=?
+    """,(uid,)).fetchone()
 
-    # 🔥 AUTO CREATE SALDO JIKA BELUM ADA
-    if saldo is None:
+    if not bal:
         conn.execute("""
             INSERT INTO leave_balance
-            (user_id, last_year, current_year, change_off, sick_no_doc, updated_at)
-            VALUES (?, 0, 0, 0, 0, DATE('now'))
-        """, (uid,))
+            VALUES (?,0,0,0,0,NULL)
+        """,(uid,))
         conn.commit()
+        bal = (0,0,0,0)
 
-        saldo = (0, 0, 0, 0)
+    with st.form("edit_balance"):
+        ly = st.number_input("Last Year", value=bal[0], min_value=0)
+        cy = st.number_input("Current Year", value=bal[1], min_value=0)
+        co = st.number_input("Change Off", value=float(bal[2]), min_value=0.0, step=0.5)
+        sick = st.number_input("Sick (No Doc)", value=bal[3], min_value=0, max_value=6)
+        submit = st.form_submit_button("Update Balance")
 
-    last_year_db, current_year_db, change_off_db, sick_db = saldo
-
-    # =====================
-    # FORM EDIT
-    # =====================
-    with st.form("edit_saldo"):
-        last_year = st.number_input(
-            "Last Year",
-            value=int(last_year_db),
-            min_value=0
-        )
-
-        current_year = st.number_input(
-            "Current Year",
-            value=int(current_year_db),
-            min_value=0
-        )
-
-        change_off = st.number_input(
-            "Change Off",
-            value=float(change_off_db),
-            min_value=0.0,
-            step=0.5
-        )
-
-        sick = st.number_input(
-            "Sick (No Doc)",
-            value=int(sick_db),
-            min_value=0,
-            max_value=6
-        )
-
-        submit = st.form_submit_button("Update Saldo")
-
-    # =====================
-    # UPDATE DB
-    # =====================
     if submit:
         conn.execute("""
             UPDATE leave_balance
-            SET
-                last_year=?,
-                current_year=?,
-                change_off=?,
-                sick_no_doc=?,
-                updated_at=DATE('now')
+            SET last_year=?,current_year=?,change_off=?,sick_no_doc=?,updated_at=DATE('now')
             WHERE user_id=?
-        """, (last_year, current_year, change_off, sick, uid))
-
+        """,(ly,cy,co,sick,uid))
         conn.commit()
-        st.success("Saldo cuti berhasil diperbarui")
+        st.success("Balance updated")
         st.rerun()
 
 # ======================================================
-# 7. HR FINAL LEAVE APPROVAL
+# 7. HOLIDAY CALENDAR
+# ======================================================
+elif menu == "📅 Holiday Calendar":
+    st.subheader("📅 Holiday Calendar")
+
+    with st.form("add_holiday"):
+        h_date = st.date_input("Holiday Date")
+        desc = st.text_input("Description")
+        submit = st.form_submit_button("Add Holiday")
+
+    if submit:
+        conn.execute("""
+            INSERT OR IGNORE INTO holidays (holiday_date, description)
+            VALUES (?,?)
+        """,(h_date.isoformat(),desc))
+        conn.commit()
+        st.success("Holiday added")
+        st.rerun()
+
+    rows = conn.execute("""
+        SELECT id,holiday_date,description
+        FROM holidays ORDER BY holiday_date
+    """).fetchall()
+
+    if not rows:
+        st.info("No holidays defined")
+    else:
+        for hid,hdate,desc in rows:
+            with st.expander(f"{hdate} — {desc}"):
+                new_desc = st.text_input("Description",desc,key=f"d_{hid}")
+                if st.button("Update",key=f"u_{hid}"):
+                    conn.execute(
+                        "UPDATE holidays SET description=? WHERE id=?",
+                        (new_desc,hid)
+                    )
+                    conn.commit()
+                    st.rerun()
+
+                if st.button("Delete",key=f"x_{hid}"):
+                    conn.execute("DELETE FROM holidays WHERE id=?",(hid,))
+                    conn.commit()
+                    st.rerun()
+
+# ======================================================
+# 8. HR FINAL LEAVE APPROVAL (🔥 POTONG SALDO)
 # ======================================================
 elif menu == "✅ HR Leave Approval":
     st.subheader("✅ HR Final Leave Approval")
 
     rows = conn.execute("""
-        SELECT
-            lr.id, u.name, lr.leave_type,
-            lr.start_date, lr.end_date,
-            lr.total_days, lr.reason, lr.user_id
+        SELECT lr.id,u.name,lr.leave_type,lr.start_date,lr.end_date,
+               lr.total_days,lr.reason,lr.user_id
         FROM leave_requests lr
-        JOIN users u ON u.id = lr.user_id
-        WHERE lr.status = 'manager_approved'
+        JOIN users u ON u.id=lr.user_id
+        WHERE lr.status='manager_approved'
         ORDER BY lr.created_at
     """).fetchall()
 
     if not rows:
-        st.info("Tidak ada leave menunggu approval HR")
+        st.info("No pending leave approvals")
     else:
         for r in rows:
-            leave_id, emp_name, leave_type, start, end, days, reason, uid = r
-
-            with st.expander(f"{emp_name} | {leave_type} | {days} hari"):
-                st.write(f"📅 {start} s/d {end}")
-                st.write(f"📝 Alasan: {reason or '-'}")
+            leave_id,name,typ,s,e,days,reason,uid = r
+            with st.expander(f"{name} | {typ} | {days} day(s)"):
+                st.write(f"{s} → {e}")
+                st.write(reason or "-")
 
                 action = st.radio(
-                    "Aksi HR",
-                    ["Approve", "Reject"],
-                    key=f"hr_action_{leave_id}",
+                    "Action",
+                    ["Approve","Reject"],
+                    key=f"a_{leave_id}",
                     horizontal=True
                 )
+                note = st.text_area(
+                    "Reject Reason",
+                    key=f"r_{leave_id}"
+                ) if action=="Reject" else None
 
-                reject_reason = None
-                if action == "Reject":
-                    reject_reason = st.text_area("Alasan Reject", key=f"hr_reason_{leave_id}")
+                if st.button("Submit",key=f"s_{leave_id}"):
+                    try:
+                        conn.execute("BEGIN")
 
-                if st.button("Submit", key=f"submit_hr_{leave_id}"):
+                        if action=="Approve":
+                            bal = conn.execute("""
+                                SELECT last_year,current_year,change_off,sick_no_doc
+                                FROM leave_balance WHERE user_id=?
+                            """,(uid,)).fetchone()
 
-                    if action == "Approve":
-                        bal = conn.execute("""
-                            SELECT last_year, current_year, change_off, sick_no_doc
-                            FROM leave_balance WHERE user_id=?
-                        """, (uid,)).fetchone()
+                            ly,cy,co,sick = bal
+                            remaining = float(days)
 
-                        last_year, current_year, change_off, sick = bal
-                        remaining = days
+                            if typ=="Personal Leave":
+                                use = min(ly,remaining)
+                                ly -= use
+                                remaining -= use
+                                use = min(cy,remaining)
+                                cy -= use
+                                remaining -= use
+                                if remaining>0:
+                                    raise Exception("Insufficient leave balance")
 
-                        if leave_type == "Personal Leave":
-                            use_last = min(last_year, remaining)
-                            last_year -= use_last
-                            remaining -= use_last
+                            elif typ=="Change Off":
+                                if co < remaining:
+                                    raise Exception("Insufficient CO balance")
+                                co -= remaining
 
-                            use_current = min(current_year, remaining)
-                            current_year -= use_current
-                            remaining -= use_current
+                            elif typ=="Sick (No Doc)":
+                                if sick + remaining > 6:
+                                    raise Exception("Sick limit exceeded")
+                                sick += remaining
 
-                        elif leave_type == "Change Off":
-                            change_off -= remaining
-                            remaining = 0
+                            conn.execute("""
+                                UPDATE leave_balance
+                                SET last_year=?,current_year=?,change_off=?,sick_no_doc=?,updated_at=DATE('now')
+                                WHERE user_id=?
+                            """,(ly,cy,co,sick,uid))
 
-                        elif leave_type == "Sick (No Doc)":
-                            sick += remaining
-                            remaining = 0
+                            conn.execute("""
+                                UPDATE leave_requests
+                                SET status='hr_approved',
+                                    approved_by=?,
+                                    approved_at=CURRENT_TIMESTAMP
+                                WHERE id=?
+                            """,(hr_id,leave_id))
 
-                        if remaining > 0:
-                            st.error("Saldo tidak mencukupi")
-                            st.stop()
-
-                        conn.execute("""
-                            UPDATE leave_balance
-                            SET last_year=?, current_year=?, change_off=?, sick_no_doc=?, updated_at=DATE('now')
-                            WHERE user_id=?
-                        """, (last_year, current_year, change_off, sick, uid))
-
-                        conn.execute("""
-                            UPDATE leave_requests
-                            SET status='hr_approved', hr_approved_at=DATE('now')
-                            WHERE id=?
-                        """, (leave_id,))
+                        else:
+                            conn.execute("""
+                                UPDATE leave_requests
+                                SET status='hr_rejected',
+                                    approved_by=?,
+                                    approved_at=CURRENT_TIMESTAMP,
+                                    reason=?
+                                WHERE id=?
+                            """,(hr_id,note or "-",leave_id))
 
                         conn.commit()
-                        st.success("Leave disetujui HR & saldo dipotong")
+                        st.success("Leave processed")
                         st.rerun()
 
-                    else:
-                        conn.execute("""
-                            UPDATE leave_requests
-                            SET status='hr_rejected', hr_approved_at=DATE('now'), reason=?
-                            WHERE id=?
-                        """, (reject_reason, leave_id))
-
-                        conn.commit()
-                        st.success("Leave ditolak HR")
-                        st.rerun()
+                    except Exception as e:
+                        conn.rollback()
+                        st.error(str(e))
 
 # ======================================================
-# 8. MANAGE LEAVE HISTORY
+# 9. HR FINAL CHANGE OFF APPROVAL
 # ======================================================
-elif menu == "🧾 Manage Leave History":
-    st.subheader("🧾 Manage Leave History")
+elif menu == "📦 HR Change Off Final Approval":
+    st.subheader("📦 HR Final Change Off Approval")
 
     rows = conn.execute("""
-        SELECT
-            lr.id, u.name, lr.leave_type,
-            lr.start_date, lr.end_date,
-            lr.total_days, lr.status, lr.created_at
-        FROM leave_requests lr
-        JOIN users u ON u.id = lr.user_id
-        ORDER BY lr.created_at DESC
+        SELECT c.id,u.name,c.work_date,c.start_date,c.end_date,
+               c.co_days,c.description,c.attachment,c.user_id
+        FROM change_off_claims c
+        JOIN users u ON u.id=c.user_id
+        WHERE c.status='manager_approved'
+        ORDER BY c.created_at
     """).fetchall()
 
     if not rows:
-        st.info("Tidak ada leave history")
+        st.info("No pending Change Off approvals")
     else:
-        table = []
         for r in rows:
-            table.append({
-                "ID": r[0],
-                "Employee": r[1],
-                "Type": r[2],
-                "Start": r[3],
-                "End": r[4],
-                "Days": r[5],
-                "Status": r[6],
-                "Created At": r[7],
-            })
+            cid,name,wdate,sdate,edate,co_days,desc,attach,uid = r
+            period = wdate or f"{sdate} → {edate}"
 
-        st.dataframe(table, width="stretch")
+            with st.expander(f"{name} | {period} | CO {co_days}"):
+                st.write(desc or "-")
 
-        leave_map = {
-            f"{r[0]} - {r[1]} ({r[2]})": r[0]
-            for r in rows
-        }
+                if attach:
+                    if st.checkbox("Preview Attachment",key=f"p_{cid}"):
+                        from utils.pdf_preview import preview_pdf
+                        preview_pdf(attach)
 
-        selected = st.selectbox("Pilih leave untuk dihapus", leave_map.keys())
-        confirm = st.checkbox("Saya yakin ingin menghapus data ini (PERMANENT)")
+                if st.button("Approve",key=f"ok_{cid}"):
+                    try:
+                        conn.execute("BEGIN")
 
-        if st.button("DELETE LEAVE"):
-            if confirm:
-                conn.execute(
-                    "DELETE FROM leave_requests WHERE id=?",
-                    (leave_map[selected],)
-                )
-                conn.commit()
-                st.success("Leave history berhasil dihapus")
-                st.rerun()
-            else:
-                st.warning("Centang konfirmasi terlebih dahulu")
+                        conn.execute("""
+                            UPDATE leave_balance
+                            SET change_off = ROUND(change_off + ?,2),
+                                updated_at=DATE('now')
+                            WHERE user_id=?
+                        """,(co_days,uid))
 
+                        conn.execute("""
+                            UPDATE change_off_claims
+                            SET status='hr_approved',
+                                approved_by=?,
+                                approved_at=CURRENT_TIMESTAMP
+                            WHERE id=?
+                        """,(hr_id,cid))
 
-elif menu == "📅 Holiday Calendar":
-    st.subheader("📅 Holiday Calendar")
+                        conn.commit()
+                        st.success("Change Off approved")
+                        st.rerun()
 
-    conn = get_conn()
+                    except Exception as e:
+                        conn.rollback()
+                        st.error(str(e))
 
-    # =========================
-    # ADD HOLIDAY
-    # =========================
-    st.markdown("### ➕ Add Holiday")
-
-    with st.form("add_holiday"):
-        col1, col2 = st.columns(2)
-
-        with col1:
-            holiday_date = st.date_input("Holiday Date")
-
-        with col2:
-            holiday_desc = st.text_input("Holiday Description")
-
-        add = st.form_submit_button("Add Holiday")
-
-    if add:
-        if not holiday_desc:
-            st.error("Holiday description is required")
-        else:
-            try:
-                conn.execute("""
-                    INSERT INTO holidays (holiday_date, description)
-                    VALUES (?, ?)
-                """, (
-                    holiday_date.isoformat(),
-                    holiday_desc
-                ))
-                conn.commit()
-                st.success("Holiday added")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Failed to add holiday: {e}")
-
-    st.divider()
-
-    # =========================
-    # LIST HOLIDAYS
-    # =========================
-    st.markdown("### 📋 Holiday List")
-
-    holidays = conn.execute("""
-        SELECT id, holiday_date, description
-        FROM holidays
-        ORDER BY holiday_date
+# ======================================================
+# 10. MANAGE LEAVE HISTORY
+# ======================================================
+elif menu == "🧾 Manage Leave History":
+    rows = conn.execute("""
+        SELECT lr.id,u.name,lr.leave_type,lr.start_date,lr.end_date,
+               lr.total_days,lr.status,lr.created_at
+        FROM leave_requests lr
+        JOIN users u ON u.id=lr.user_id
+        ORDER BY lr.created_at DESC
     """).fetchall()
 
-    if not holidays:
-        st.info("No holidays defined")
-    else:
-        for h in holidays:
-            hid, hdate, desc = h
-
-            with st.expander(f"{hdate} — {desc}"):
-                col1, col2 = st.columns(2)
-
-                # EDIT
-                with col1:
-                    new_desc = st.text_input(
-                        "Holiday Description",
-                        value=desc,
-                        key=f"desc_{hid}"
-                    )
-
-                    if st.button("Update", key=f"update_{hid}"):
-                        conn.execute("""
-                            UPDATE holidays
-                            SET description=?
-                            WHERE id=?
-                        """, (new_desc, hid))
-                        conn.commit()
-                        st.success("Holiday updated")
-                        st.rerun()
-
-                # DELETE
-                with col2:
-                    st.warning("Danger Zone")
-                    if st.button("Delete", key=f"delete_{hid}"):
-                        conn.execute(
-                            "DELETE FROM holidays WHERE id=?",
-                            (hid,)
-                        )
-                        conn.commit()
-                        st.success("Holiday deleted")
-                        st.rerun()
-
-    conn.close()
+    st.dataframe([{
+        "ID":r[0],
+        "Employee":r[1],
+        "Type":r[2],
+        "Start":r[3],
+        "End":r[4],
+        "Days":r[5],
+        "Status":r[6],
+        "Created":r[7]
+    } for r in rows], use_container_width=True)
 
 # ======================================================
-# CLEANUP
-# ======================================================
+conn.close()

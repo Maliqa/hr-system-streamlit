@@ -1,11 +1,16 @@
 import streamlit as st
 from utils.api import api_get, api_post
 from core.leave_engine import run_leave_engine
+from core.db import init_db 
+from core.seed import seed_hr_if_empty
 
 # Jalankan engine (idempotent)
 run_leave_engine()
 
 st.set_page_config(page_title="HR System", layout="wide")
+
+init_db()
+seed_hr_if_empty()
 
 # Hide sidebar
 st.markdown("""
