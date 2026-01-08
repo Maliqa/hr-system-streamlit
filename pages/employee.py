@@ -1,10 +1,9 @@
 import os
 import streamlit as st
-import time as time_module
 from datetime import date, datetime, timedelta, time as dtime
-import time as time_module
 from core.db import get_conn
 from core.holiday import calculate_working_days
+from core.change_off import calculate_co
 from utils.api import api_get, api_post
 import pandas as pd
 
@@ -36,7 +35,6 @@ if not isinstance(user, dict):
     st.stop()
 
 user_id = user.get("id") or user.get("user_id")
-
 if not user_id:
     st.error("User ID missing in session")
     st.session_state.clear()
@@ -48,42 +46,6 @@ if not user_id:
 # ======================================================
 conn = get_conn()
 cur = conn.cursor()
-
-# ======================================================
-# HOLIDAY & LEAVE HELPERS
-# ======================================================
-# ======================================================
-# HOLIDAY & WORKDAY LOGIC (SINGLE SOURCE OF TRUTH)
-# ======================================================
-
-# ======================================================
-# CHANGE OFF CALCULATION (STABLE)
-# ======================================================
-def calculate_co(work_type, work_date, end_time, hours):
-    is_holiday = work_date.weekday() >= 5
-
-    if work_type == "travelling":
-        if not is_holiday or end_time is None:
-            return 0.0
-        return 1.0 if end_time < time(12, 0) else 0.5
-
-    if work_type == "standby":
-        return 0.5 if is_holiday else 0.0
-
-    if work_type == "3-shift":
-        return 1.0 if is_holiday else 0.0
-
-    if work_type == "2-shift":
-        return 1.5 if is_holiday else 0.5
-
-    if work_type in ["non-shift", "back-office"]:
-        if hours is None:
-            return 0.0
-        if is_holiday:
-            return 2.0 if hours >= 12 else 1.0
-        return 1.0 if hours >= 12 else 0.0
-
-    return 0.0
 
 # ======================================================
 # HEADER
@@ -109,47 +71,68 @@ menu = st.radio(
 )
 
 # ======================================================
-# PROFILE & SALDO
+# PROFILE & SALDO (UI UPGRADED)
 # ======================================================
 if menu == MENU_PROFILE:
     row = cur.execute("""
-        SELECT nik,name,email,role,join_date,permanent_date
+        SELECT nik,name,email,role,division,join_date,permanent_date
         FROM users WHERE id=?
     """, (user_id,)).fetchone()
-
-    if row:
-        nik,name,email,role,join,perm = row
-        c1,c2 = st.columns(2)
-        with c1:
-            st.text_input("NIK", nik, disabled=True)
-            st.text_input("Name", name, disabled=True)
-            st.text_input("Email", email, disabled=True)
-        with c2:
-            st.text_input("Role", role, disabled=True)
-            st.text_input("Join Date", join, disabled=True)
-            st.text_input("Permanent Date", perm, disabled=True)
 
     saldo = cur.execute("""
         SELECT last_year,current_year,change_off,sick_no_doc
         FROM leave_balance WHERE user_id=?
     """, (user_id,)).fetchone()
 
+    if row:
+        nik, name, email, role, division, join, perm = row
+        status = "Permanent" if perm else "Probation"
+
+        # =========================
+        # EMPLOYEE CARD
+        # =========================
+        st.markdown(f"""
+        <div style="
+            background:#f8fafc;
+            border:1px solid #e5e7eb;
+            border-radius:14px;
+            padding:20px;
+            margin-bottom:16px;
+        ">
+            <h3 style="margin-bottom:4px;">👤 {name}</h3>
+            <p style="margin:0;color:#6b7280;">
+                {role.upper()} • {division} • NIK {nik}
+            </p>
+            <p style="margin-top:6px;color:#374151;">
+                📧 {email}
+            </p>
+            <p style="margin-top:6px;color:#374151;font-size:14px;">
+    📅 Join Date: <strong>{join}</strong><br>
+    🏁 Permanent Date: <strong>{perm if perm else '-'}</strong>
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
     if saldo:
-        ly,cy,co,sick = saldo
-        c1,c2,c3,c4 = st.columns(4)
-        c1.metric("Last Year", ly)
-        c2.metric("Current Year", cy)
-        c3.metric("Change Off", round(co,2))
-        c4.metric("Sick (No Doc)", sick)
+        ly, cy, co, sick = saldo
+
+        st.divider()
+        st.subheader("💼 Leave Balance")
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("🌴 Last Year Leave", ly, help="Sisa cuti tahun lalu")
+        c2.metric("📅 Current Year Leave", cy, help="Sisa cuti tahun berjalan")
+        c3.metric("🧳 Change Off", round(co, 2), help="Hasil lembur")
+        c4.metric("🤒 Sick (No Doc)", sick, help="Maksimal 6 hari / tahun")
+
+        if cy <= 2:
+            st.warning("⚠️ Sisa cuti tahun berjalan hampir habis")
 
 # ======================================================
-# SESSION STATE INIT (WAJIB)
+# SESSION STATE INIT
 # ======================================================
 if "leave_submitted" not in st.session_state:
     st.session_state.leave_submitted = False
-
-if "leave_submit_time" not in st.session_state:
-    st.session_state.leave_submit_time = None
 
 if "leave_type" not in st.session_state:
     st.session_state.leave_type = "Personal Leave"
@@ -160,124 +143,39 @@ if "leave_start_date" not in st.session_state:
 if "leave_end_date" not in st.session_state:
     st.session_state.leave_end_date = date.today()
 
-
 # ======================================================
-# SUBMIT LEAVE (FINAL - STREAMLIT SAFE)
+# SUBMIT LEAVE
 # ======================================================
 elif menu == MENU_LEAVE:
     st.subheader("➕ Submit Leave Request")
 
-    # =============================
-    # SESSION STATE INIT (SEKALI SAJA)
-    # =============================
-    if "leave_start_date" not in st.session_state:
-        st.session_state.leave_start_date = date.today()
-
-    if "leave_end_date" not in st.session_state:
-        st.session_state.leave_end_date = date.today()
-
-    if "leave_submitted" not in st.session_state:
-        st.session_state.leave_submitted = False
-
-    # =============================
-    # FORM
-    # =============================
     with st.form("leave_form"):
-
         leave_type = st.selectbox(
             "Leave Type",
             ["Personal Leave", "Change Off", "Sick (No Doc)"],
-            key="leave_type",
-            disabled=st.session_state.leave_submitted
+            key="leave_type"
         )
 
-        col1, col2 = st.columns(2)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.date_input("Start Date", key="leave_start_date")
+        with c2:
+            st.date_input("End Date", key="leave_end_date")
 
-        with col1:
-            st.date_input(
-                "Start Date",
-                key="leave_start_date",
-                disabled=st.session_state.leave_submitted
-            )
+        reason = st.text_area("Reason", height=120)
+        submit = st.form_submit_button("Submit Leave")
 
-        with col2:
-            st.date_input(
-                "End Date",
-                key="leave_end_date",
-                disabled=st.session_state.leave_submitted
-            )
-
-        reason = st.text_area(
-            "Reason",
-            height=120,
-            disabled=st.session_state.leave_submitted
-        )
-
-        submit = st.form_submit_button(
-            "Submit Leave",
-            disabled=st.session_state.leave_submitted
-        )
-
-    # =============================
-    # AMBIL VALUE DARI SESSION STATE
-    # =============================
     start_date = st.session_state.leave_start_date
     end_date = st.session_state.leave_end_date
 
-    # =============================
-    # VALIDASI RANGE TANGGAL
-    # =============================
     if end_date < start_date:
-        st.warning("⚠️ End Date tidak boleh lebih kecil dari Start Date")
+        st.error("End Date tidak boleh lebih kecil dari Start Date")
         st.stop()
 
-    # =============================
-    # PREVIEW
-    # =============================
-    preview_days = calculate_working_days(start_date, end_date)
-    st.info(f"📅 **Total Leave Requested:** {preview_days} working day(s)")
+    total_days = calculate_working_days(start_date, end_date)
+    st.info(f"📅 Total Leave Requested: {total_days} working day(s)")
 
-    # =============================
-    # SUBMIT LOGIC
-    # =============================
-    if submit and not st.session_state.leave_submitted:
-
-        total_days = calculate_working_days(start_date, end_date)
-
-        if total_days <= 0:
-            st.error("❌ Tidak ada hari kerja valid (weekend / holiday)")
-            st.stop()
-
-        saldo = cur.execute("""
-            SELECT last_year, current_year, change_off, sick_no_doc
-            FROM leave_balance
-            WHERE user_id=?
-        """, (user_id,)).fetchone()
-
-        if not saldo:
-            st.error("❌ Saldo tidak ditemukan")
-            st.stop()
-
-        last_year, current_year, change_off, sick_used = saldo
-
-        if leave_type == "Personal Leave":
-            if total_days > (last_year + current_year):
-                st.error("❌ Saldo Personal Leave tidak mencukupi")
-                st.stop()
-
-        elif leave_type == "Change Off":
-            if total_days > change_off:
-                st.error("❌ Saldo Change Off tidak mencukupi")
-                st.stop()
-
-        elif leave_type == "Sick (No Doc)":
-            if total_days > (6 - sick_used):
-                st.error("❌ Sisa Sick (No Doc) tidak mencukupi")
-                st.stop()
-
-        # =============================
-        # INSERT DATABASE
-        # =============================
+    if submit:
         cur.execute("""
             INSERT INTO leave_requests
             (user_id, leave_type, start_date, end_date, total_days, reason, status, created_at)
@@ -290,21 +188,8 @@ elif menu == MENU_LEAVE:
             total_days,
             reason
         ))
-
         conn.commit()
-
-        st.session_state.leave_submitted = True
-
-        st.success("✅ Submit leave terkirim dan menunggu approval Manager")
-
-        st.markdown("### 📌 Leave Summary")
-        st.markdown(f"""
-        - **Type:** {leave_type}  
-        - **Period:** {start_date} → {end_date}  
-        - **Total:** **{total_days} hari kerja**
-        """)
-
-
+        st.success("✅ Leave submitted")
 
 # ======================================================
 # LEAVE HISTORY
@@ -323,9 +208,6 @@ elif menu == MENU_HISTORY:
     )
     st.dataframe(df, width="stretch")
 
-# ======================================================
-# SUBMIT CHANGE OFF
-# ======================================================
 # ======================================================
 # SUBMIT CHANGE OFF CLAIM (FINAL ENTERPRISE VERSION)
 # ======================================================

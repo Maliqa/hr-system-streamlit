@@ -1,5 +1,6 @@
 import sqlite3
 import os
+
 # =========================
 # ABSOLUTE PROJECT ROOT
 # =========================
@@ -13,6 +14,7 @@ DB_PATH = os.path.join(DATA_DIR, "hr.db")
 def get_conn():
     os.makedirs(DATA_DIR, exist_ok=True)
     return sqlite3.connect(DB_PATH, check_same_thread=False)
+
 # =========================
 # INIT DATABASE
 # =========================
@@ -20,6 +22,9 @@ def init_db():
     conn = get_conn()
     c = conn.cursor()
 
+    # =========================
+    # USERS
+    # =========================
     c.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,14 +32,19 @@ def init_db():
         name TEXT NOT NULL,
         email TEXT UNIQUE NOT NULL,
         role TEXT NOT NULL,
+        division TEXT NOT NULL DEFAULT 'Back Office',
         join_date DATE,
         probation_date DATE,
         permanent_date DATE,
         password_hash TEXT NOT NULL,
-        manager_id INTEGER
+        manager_id INTEGER,
+        FOREIGN KEY (manager_id) REFERENCES users(id)
     )
     """)
 
+    # =========================
+    # LEAVE BALANCE
+    # =========================
     c.execute("""
     CREATE TABLE IF NOT EXISTS leave_balance (
         user_id INTEGER PRIMARY KEY,
@@ -47,6 +57,9 @@ def init_db():
     )
     """)
 
+    # =========================
+    # LEAVE REQUESTS
+    # =========================
     c.execute("""
     CREATE TABLE IF NOT EXISTS leave_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,6 +78,9 @@ def init_db():
     )
     """)
 
+    # =========================
+    # HOLIDAYS
+    # =========================
     c.execute("""
     CREATE TABLE IF NOT EXISTS holidays (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,6 +89,9 @@ def init_db():
     )
     """)
 
+    # =========================
+    # CHANGE OFF CLAIMS
+    # =========================
     c.execute("""
     CREATE TABLE IF NOT EXISTS change_off_claims (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,7 +106,8 @@ def init_db():
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         approved_by INTEGER,
         approved_at DATETIME,
-        FOREIGN KEY (user_id) REFERENCES users(id)
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (approved_by) REFERENCES users(id)
     )
     """)
 

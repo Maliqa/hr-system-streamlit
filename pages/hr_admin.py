@@ -32,7 +32,7 @@ if payload.get("role") != "hr":
 hr_id = payload.get("id") or payload.get("user_id")
 
 # ======================================================
-# ENGINE (ONLY ACCRUAL – NO DEDUCTION)
+# ENGINE
 # ======================================================
 run_leave_engine()
 
@@ -70,15 +70,17 @@ menu = st.radio(
 # COMMON DATA
 # ======================================================
 users = conn.execute("""
-    SELECT id, nik, name, email, role, join_date, permanent_date
+    SELECT id, nik, name, email, role, division, join_date, permanent_date
     FROM users
     ORDER BY name
 """).fetchall()
 
 user_map = {
-    f"{u[2]} ({u[3]}) [{u[4]}]": u[0]
+    f"{u[2]} ({u[3]}) [{u[4]} | {u[5]}]": u[0]
     for u in users
 }
+
+DIVISIONS = ["TSCM", "IC", "Back Office"]
 
 # ======================================================
 # 1. CREATE USER
@@ -91,6 +93,7 @@ if menu == "➕ Create User":
         name = st.text_input("Name")
         email = st.text_input("Email")
         role = st.selectbox("Role", ["employee", "manager", "hr"])
+        division = st.selectbox("Division", DIVISIONS)
         join_date = st.date_input("Join Date", min_value=date(2000, 1, 1))
         permanent_date = st.date_input("Permanent Date", value=None)
         password = st.text_input("Password", type="password")
@@ -98,10 +101,13 @@ if menu == "➕ Create User":
 
     if submit:
         conn.execute("""
-            INSERT INTO users (nik,name,email,role,join_date,permanent_date,password_hash)
-            VALUES (?,?,?,?,?,?,?)
+            INSERT INTO users (
+                nik, name, email, role, division,
+                join_date, permanent_date, password_hash
+            )
+            VALUES (?,?,?,?,?,?,?,?)
         """, (
-            nik, name, email, role,
+            nik, name, email, role, division,
             join_date.isoformat(),
             permanent_date.isoformat() if permanent_date else None,
             hash_password(password)
@@ -130,8 +136,9 @@ elif menu == "📋 User List":
         "Name": u[2],
         "Email": u[3],
         "Role": u[4],
-        "Join Date": u[5],
-        "Permanent Date": u[6] or "-"
+        "Division": u[5],
+        "Join Date": u[6],
+        "Permanent Date": u[7] or "-"
     } for u in users], use_container_width=True)
 
 # ======================================================
@@ -143,7 +150,7 @@ elif menu == "✏️ Edit User":
     uid = user_map[selected]
 
     u = conn.execute("""
-        SELECT nik,name,email,role,join_date,permanent_date
+        SELECT nik,name,email,role,division,join_date,permanent_date
         FROM users WHERE id=?
     """,(uid,)).fetchone()
 
@@ -156,20 +163,25 @@ elif menu == "✏️ Edit User":
             ["employee","manager","hr"],
             index=["employee","manager","hr"].index(u[3])
         )
-        join_date = st.date_input("Join Date", date.fromisoformat(u[4]))
+        division = st.selectbox(
+            "Division",
+            DIVISIONS,
+            index=DIVISIONS.index(u[4])
+        )
+        join_date = st.date_input("Join Date", date.fromisoformat(u[5]))
         permanent_date = st.date_input(
             "Permanent Date",
-            date.fromisoformat(u[5]) if u[5] else None
+            date.fromisoformat(u[6]) if u[6] else None
         )
         submit = st.form_submit_button("Update")
 
     if submit:
         conn.execute("""
             UPDATE users
-            SET nik=?,name=?,email=?,role=?,join_date=?,permanent_date=?
+            SET nik=?,name=?,email=?,role=?,division=?,join_date=?,permanent_date=?
             WHERE id=?
         """, (
-            nik, name, email, role,
+            nik, name, email, role, division,
             join_date.isoformat(),
             permanent_date.isoformat() if permanent_date else None,
             uid
