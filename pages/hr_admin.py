@@ -5,6 +5,33 @@ from core.db import get_conn
 from core.auth import hash_password
 from core.leave_engine import run_leave_engine
 
+
+# ======================================================
+# UTIL
+# ======================================================
+def safe_date(v):
+    if v is None:
+        return None
+    if isinstance(v, date):
+        return v
+    return date.fromisoformat(v)
+
+def get_managers_by_division(conn):
+    rows = conn.execute("""
+        SELECT id, name, division
+        FROM users
+        WHERE role = 'manager'
+    """).fetchall()
+
+    result = {}
+    for mid, name, div in rows:
+        result.setdefault(div, []).append({
+            "id": mid,
+            "label": f"{name} ({div})"
+        })
+    return result
+
+
 # ======================================================
 # PAGE CONFIG
 # ======================================================
@@ -116,88 +143,241 @@ st.divider()
 # COMMON DATA
 # ======================================================
 users = conn.execute("""
-    SELECT id, nik, name, email, role, division, join_date, permanent_date
-    FROM users ORDER BY name
+    SELECT id, nik, name, email, role, division,
+           join_date, permanent_date, manager_id
+    FROM users
+    ORDER BY name
 """).fetchall()
 
-user_map = {
-    f"{u[2]} ({u[3]}) [{u[4]} | {u[5]}]": u[0]
-    for u in users
-}
+user_map = {f"{u[2]} ({u[3]})": u[0] for u in users}
 
-DIVISIONS = ["TSCM", "IC", "Back Office"]
+DIVISIONS = [
+    "TSCM", "IC", "GA & PURCHASING",
+    "HR", "FINANCE", "WORKSHOP",
+    "SALES", "Back Office"
+]
+
+
+# ======================================================
+# MANAGER DATA (WAJIB SEBELUM CREATE USER)
+# ======================================================
+managers = conn.execute("""
+    SELECT id, name, division
+    FROM users
+    WHERE role = 'manager'
+    ORDER BY name
+""").fetchall()
+
+managers_by_division = {}
+for mid, name, div in managers:
+    managers_by_division.setdefault(div, []).append({
+        "id": mid,
+        "label": f"{name} ({div})"
+    })
 
 # ======================================================
 # USER MANAGEMENT
 # ======================================================
 if menu == "➕ Create User":
     st.subheader("➕ Create User")
-    with st.form("create_user"):
+
+    # =========================
+    # STEP 1: PRE-SELECTION (REACTIVE)
+    # =========================
+    role = st.selectbox(
+        "Role",
+        ["employee", "manager", "hr"],
+        key="create_role"
+    )
+
+    division = st.selectbox(
+        "Division",
+        DIVISIONS,
+        key="create_division"
+    )
+
+    manager_id = None
+
+    if role == "employee":
+        available_managers = managers_by_division.get(division, [])
+
+        if not available_managers:
+            st.error(f"❌ Tidak ada manager untuk divisi {division}")
+            st.stop()
+
+        manager_label = st.selectbox(
+            "Manager",
+            [m["label"] for m in available_managers],
+            key="create_manager"
+        )
+
+        manager_id = next(
+            m["id"] for m in available_managers
+            if m["label"] == manager_label
+        )
+
+    st.divider()
+
+    # =========================
+    # STEP 2: FINAL FORM (STATIC)
+    # =========================
+    with st.form("create_user_form"):
         nik = st.text_input("NIK")
         name = st.text_input("Name")
         email = st.text_input("Email")
-        role = st.selectbox("Role", ["employee", "manager", "hr"])
-        division = st.selectbox("Division", DIVISIONS)
-        join_date = st.date_input("Join Date")
-        permanent_date = st.date_input("Permanent Date", value=None)
+        join_date = st.date_input(
+            "Join Date",
+            min_value=date(1990, 1, 1),
+            max_value=date.today()
+        )
+
+        permanent_date = st.date_input(
+            "permanent_date",
+            min_value=date(1990, 1, 1),
+            max_value=date.today()
+        )
         password = st.text_input("Password", type="password")
+
         submit = st.form_submit_button("Create User")
 
+    # =========================
+    # SUBMIT
+    # =========================
     if submit:
+        if role == "employee" and not manager_id:
+            st.error("Employee wajib punya manager")
+            st.stop()
+
         conn.execute("""
-            INSERT INTO users (nik,name,email,role,division,join_date,permanent_date,password_hash)
-            VALUES (?,?,?,?,?,?,?,?)
+            INSERT INTO users
+            (nik,name,email,role,division,manager_id,join_date,permanent_date,password_hash)
+            VALUES (?,?,?,?,?,?,?,?,?)
         """, (
             nik, name, email, role, division,
+            manager_id,
             join_date.isoformat(),
             permanent_date.isoformat() if permanent_date else None,
             hash_password(password)
         ))
+
         uid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
         conn.execute("""
-            INSERT INTO leave_balance (user_id,last_year,current_year,change_off,sick_no_doc)
+            INSERT INTO leave_balance
+            (user_id,last_year,current_year,change_off,sick_no_doc)
             VALUES (?,0,0,0,0)
-        """,(uid,))
+        """, (uid,))
+
         conn.commit()
-        st.success("User created")
+        st.success("✅ User created successfully")
         st.rerun()
+
 
 elif menu == "📋 User List":
     st.subheader("📋 User List")
     st.dataframe([{
-        "NIK":u[1],"Name":u[2],"Email":u[3],"Role":u[4],
-        "Division":u[5],"Join":u[6],"Permanent":u[7] or "-"
+        "NIK": u[1],
+        "Name": u[2],
+        "Email": u[3],
+        "Role": u[4],
+        "Division": u[5],
+        "Join Date": u[6],
+        "Permanent Date": u[7] or "-",
     } for u in users], width="stretch")
 
 elif menu == "✏️ Edit User":
     st.subheader("✏️ Edit User")
+
     uid = user_map[st.selectbox("Select User", user_map)]
-    u = conn.execute("""
-        SELECT nik,name,email,role,division,join_date,permanent_date
-        FROM users WHERE id=?
-    """,(uid,)).fetchone()
+    u = next(x for x in users if x[0] == uid)
+
+    managers_by_division = get_managers_by_division(conn)
 
     with st.form("edit_user"):
-        nik = st.text_input("NIK", u[0])
-        name = st.text_input("Name", u[1])
-        email = st.text_input("Email", u[2])
-        role = st.selectbox("Role", ["employee","manager","hr"],
-                            index=["employee","manager","hr"].index(u[3]))
-        division = st.selectbox("Division", DIVISIONS, index=DIVISIONS.index(u[4]))
-        join_date = st.date_input("Join Date", date.fromisoformat(u[5]))
-        permanent_date = st.date_input("Permanent Date",
-            date.fromisoformat(u[6]) if u[6] else None)
+        nik = st.text_input("NIK", u[1])
+        name = st.text_input("Name", u[2])
+        email = st.text_input("Email", u[3])
+
+        role = st.selectbox(
+            "Role",
+            ["employee", "manager", "hr"],
+            index=["employee", "manager", "hr"].index(u[4])
+        )
+
+        division = st.selectbox(
+            "Division",
+            DIVISIONS,
+            index=DIVISIONS.index(u[5])
+        )
+
+        manager_id = None
+
+        # ✅ MANAGER HANYA UNTUK EMPLOYEE
+        if role == "employee":
+            available_managers = managers_by_division.get(division, [])
+
+            if not available_managers:
+                st.warning(f"⚠️ Tidak ada manager untuk divisi {division}")
+            else:
+                # cari manager existing
+                current_label = next(
+                    (m["label"] for m in available_managers if m["id"] == u[8]),
+                    None
+                )
+
+                manager_label = st.selectbox(
+                    "Manager",
+                    [m["label"] for m in available_managers],
+                    index=[m["label"] for m in available_managers].index(current_label)
+                    if current_label else 0
+                )
+
+                manager_id = next(
+                    m["id"] for m in available_managers
+                    if m["label"] == manager_label
+                )
+
+        join_date = st.date_input(
+            "Join Date",
+            value=safe_date(u[6]),
+            min_value=date(1990, 1, 1),
+            max_value=date.today()
+        )
+        permanent_date = st.date_input(
+            "permanent_date",
+            value=safe_date(u[7]),
+            min_value=date(1990, 1, 1),
+            max_value=date.today()
+        )
+
         submit = st.form_submit_button("Update")
 
     if submit:
+        # 🔐 SAFETY: NON-EMPLOYEE TIDAK BOLEH PUNYA MANAGER
+        if role != "employee":
+            manager_id = None
+
         conn.execute("""
-            UPDATE users SET nik=?,name=?,email=?,role=?,division=?,join_date=?,permanent_date=?
+            UPDATE users
+            SET nik=?, name=?, email=?, role=?, division=?,
+                manager_id=?, join_date=?, permanent_date=?
             WHERE id=?
-        """,(nik,name,email,role,division,join_date.isoformat(),
-             permanent_date.isoformat() if permanent_date else None, uid))
+        """, (
+            nik,
+            name,
+            email,
+            role,
+            division,
+            manager_id,
+            join_date.isoformat(),
+            permanent_date.isoformat() if permanent_date else None,
+            uid
+        ))
+
         conn.commit()
-        st.success("Updated")
+        st.success("✅ User updated")
         st.rerun()
+
 
 elif menu == "🔐 Reset Password":
     st.subheader("🔐 Reset Password")
