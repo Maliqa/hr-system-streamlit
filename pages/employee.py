@@ -219,6 +219,7 @@ elif menu == MENU_CO:
     # =========================
     SINGLE_DAY_TYPES = ["travelling", "standby"]
     MULTI_DAY_TYPES = ["non-shift", "back-office", "2-shift", "3-shift"]
+    NO_UPLOAD_TYPES = ["travelling", "standby"]
 
     # =========================
     # BASIC INPUT
@@ -233,10 +234,14 @@ elif menu == MENU_CO:
         ["travelling", "standby", "non-shift", "back-office", "2-shift", "3-shift"]
     )
 
-    uploaded = st.file_uploader(
-        "Upload SPL / Timesheet (PDF)",
-        type=["pdf"]
-    )
+    uploaded = None
+    if work_type not in NO_UPLOAD_TYPES:
+        uploaded = st.file_uploader(
+            "Upload SPL / Timesheet (PDF)",
+            type=["pdf"]
+        )
+    else:
+        st.info("ℹ️ Travelling & Standby tidak memerlukan upload dokumen")
 
     # =========================
     # MODE A — SINGLE DAY
@@ -249,7 +254,7 @@ elif menu == MENU_CO:
         st.info(f"🧮 CO Result: **{co} hari**")
 
         if st.button("Submit"):
-            if not uploaded:
+            if work_type not in NO_UPLOAD_TYPES and not uploaded:
                 st.error("PDF wajib diupload")
                 st.stop()
 
@@ -257,13 +262,14 @@ elif menu == MENU_CO:
                 st.error("CO Result = 0, tidak bisa diajukan")
                 st.stop()
 
-            folder = f"uploads/change_off/{user_id}"
-            os.makedirs(folder, exist_ok=True)
-            fname = f"CO_{user_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
-            fpath = os.path.join(folder, fname)
-
-            with open(fpath, "wb") as f:
-                f.write(uploaded.getbuffer())
+            fpath = None
+            if uploaded:
+                folder = f"uploads/change_off/{user_id}"
+                os.makedirs(folder, exist_ok=True)
+                fname = f"CO_{user_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
+                fpath = os.path.join(folder, fname)
+                with open(fpath, "wb") as f:
+                    f.write(uploaded.getbuffer())
 
             cur.execute("""
                 INSERT INTO change_off_claims (
@@ -381,6 +387,7 @@ elif menu == MENU_CO:
             conn.commit()
             st.success("✅ Change Off multi-day submitted")
             st.rerun()
+
 
 # ======================================================
 # CHANGE OFF HISTORY

@@ -12,6 +12,7 @@ st.set_page_config(page_title="HR Admin Dashboard", layout="wide")
 st.markdown("""
 <style>
 section[data-testid="stSidebar"] { display: none; }
+div[data-baseweb="radio"] > div { gap: 14px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -35,7 +36,6 @@ hr_id = payload.get("id") or payload.get("user_id")
 # ENGINE
 # ======================================================
 run_leave_engine()
-
 conn = get_conn()
 
 # ======================================================
@@ -47,32 +47,77 @@ if st.button("Logout"):
     st.switch_page("app.py")
 
 # ======================================================
-# MENU
+# HR MODULE & MENU CONFIG
 # ======================================================
-menu = st.radio(
-    "Menu",
-    [
+MODULES = {
+    "🧍 User Management": [
         "➕ Create User",
         "📋 User List",
         "✏️ Edit User",
         "🔐 Reset Password",
         "🗑️ Delete User",
+    ],
+    "🗂️ Leave & Attendance": [
         "📊 Edit Saldo Cuti",
         "📅 Holiday Calendar",
-        "✅ HR Leave Approval",
-        "📦 HR Change Off Final Approval",
         "🧾 Manage Leave History",
     ],
+    "✅ Approval Center": [
+        "✅ HR Leave Approval",
+        "📦 HR Change Off Final Approval",
+    ],
+    "🛡️ System & Audit": [
+        "📊 System Status",
+        "🕵️ Login Activity",
+        "🚨 June 30 Reset (Emergency)",
+    ],
+}
+
+# ======================================================
+# SESSION STATE INIT (ANTI BUG)
+# ======================================================
+if "hr_module" not in st.session_state:
+    st.session_state.hr_module = list(MODULES.keys())[0]
+
+if "hr_menu" not in st.session_state:
+    st.session_state.hr_menu = MODULES[st.session_state.hr_module][0]
+
+# ======================================================
+# MODULE SELECT (DROPDOWN)
+# ======================================================
+module = st.selectbox(
+    "📦 Module",
+    options=list(MODULES.keys()),
+    key="hr_module"
+)
+
+# ======================================================
+# RESET MENU JIKA MODULE BERUBAH
+# ======================================================
+if st.session_state.hr_menu not in MODULES[module]:
+    st.session_state.hr_menu = MODULES[module][0]
+
+# ======================================================
+# MENU SELECT (RADIO)
+# ======================================================
+menu = st.radio(
+    "📌 Menu",
+    options=MODULES[module],
+    key="hr_menu",
     horizontal=True
 )
 
+# ======================================================
+# CONTEXT HEADER
+# ======================================================
+
+st.divider()
 # ======================================================
 # COMMON DATA
 # ======================================================
 users = conn.execute("""
     SELECT id, nik, name, email, role, division, join_date, permanent_date
-    FROM users
-    ORDER BY name
+    FROM users ORDER BY name
 """).fetchall()
 
 user_map = {
@@ -83,28 +128,24 @@ user_map = {
 DIVISIONS = ["TSCM", "IC", "Back Office"]
 
 # ======================================================
-# 1. CREATE USER
+# USER MANAGEMENT
 # ======================================================
 if menu == "➕ Create User":
     st.subheader("➕ Create User")
-
     with st.form("create_user"):
         nik = st.text_input("NIK")
         name = st.text_input("Name")
         email = st.text_input("Email")
         role = st.selectbox("Role", ["employee", "manager", "hr"])
         division = st.selectbox("Division", DIVISIONS)
-        join_date = st.date_input("Join Date", min_value=date(2000, 1, 1))
+        join_date = st.date_input("Join Date")
         permanent_date = st.date_input("Permanent Date", value=None)
         password = st.text_input("Password", type="password")
         submit = st.form_submit_button("Create User")
 
     if submit:
         conn.execute("""
-            INSERT INTO users (
-                nik, name, email, role, division,
-                join_date, permanent_date, password_hash
-            )
+            INSERT INTO users (nik,name,email,role,division,join_date,permanent_date,password_hash)
             VALUES (?,?,?,?,?,?,?,?)
         """, (
             nik, name, email, role, division,
@@ -112,43 +153,25 @@ if menu == "➕ Create User":
             permanent_date.isoformat() if permanent_date else None,
             hash_password(password)
         ))
-
         uid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-
         conn.execute("""
-            INSERT INTO leave_balance
-            (user_id,last_year,current_year,change_off,sick_no_doc)
+            INSERT INTO leave_balance (user_id,last_year,current_year,change_off,sick_no_doc)
             VALUES (?,0,0,0,0)
-        """, (uid,))
-
+        """,(uid,))
         conn.commit()
         st.success("User created")
         st.rerun()
 
-# ======================================================
-# 2. USER LIST
-# ======================================================
 elif menu == "📋 User List":
     st.subheader("📋 User List")
     st.dataframe([{
-        "ID": u[0],
-        "NIK": u[1],
-        "Name": u[2],
-        "Email": u[3],
-        "Role": u[4],
-        "Division": u[5],
-        "Join Date": u[6],
-        "Permanent Date": u[7] or "-"
-    } for u in users], use_container_width=True)
+        "NIK":u[1],"Name":u[2],"Email":u[3],"Role":u[4],
+        "Division":u[5],"Join":u[6],"Permanent":u[7] or "-"
+    } for u in users], width="stretch")
 
-# ======================================================
-# 3. EDIT USER
-# ======================================================
 elif menu == "✏️ Edit User":
     st.subheader("✏️ Edit User")
-    selected = st.selectbox("Select User", user_map.keys())
-    uid = user_map[selected]
-
+    uid = user_map[st.selectbox("Select User", user_map)]
     u = conn.execute("""
         SELECT nik,name,email,role,division,join_date,permanent_date
         FROM users WHERE id=?
@@ -158,112 +181,72 @@ elif menu == "✏️ Edit User":
         nik = st.text_input("NIK", u[0])
         name = st.text_input("Name", u[1])
         email = st.text_input("Email", u[2])
-        role = st.selectbox(
-            "Role",
-            ["employee","manager","hr"],
-            index=["employee","manager","hr"].index(u[3])
-        )
-        division = st.selectbox(
-            "Division",
-            DIVISIONS,
-            index=DIVISIONS.index(u[4])
-        )
+        role = st.selectbox("Role", ["employee","manager","hr"],
+                            index=["employee","manager","hr"].index(u[3]))
+        division = st.selectbox("Division", DIVISIONS, index=DIVISIONS.index(u[4]))
         join_date = st.date_input("Join Date", date.fromisoformat(u[5]))
-        permanent_date = st.date_input(
-            "Permanent Date",
-            date.fromisoformat(u[6]) if u[6] else None
-        )
+        permanent_date = st.date_input("Permanent Date",
+            date.fromisoformat(u[6]) if u[6] else None)
         submit = st.form_submit_button("Update")
 
     if submit:
         conn.execute("""
-            UPDATE users
-            SET nik=?,name=?,email=?,role=?,division=?,join_date=?,permanent_date=?
+            UPDATE users SET nik=?,name=?,email=?,role=?,division=?,join_date=?,permanent_date=?
             WHERE id=?
-        """, (
-            nik, name, email, role, division,
-            join_date.isoformat(),
-            permanent_date.isoformat() if permanent_date else None,
-            uid
-        ))
+        """,(nik,name,email,role,division,join_date.isoformat(),
+             permanent_date.isoformat() if permanent_date else None, uid))
         conn.commit()
-        st.success("User updated")
+        st.success("Updated")
         st.rerun()
 
-# ======================================================
-# 4. RESET PASSWORD
-# ======================================================
 elif menu == "🔐 Reset Password":
     st.subheader("🔐 Reset Password")
-    selected = st.selectbox("Select User", user_map.keys())
-    uid = user_map[selected]
-
+    uid = user_map[st.selectbox("Select User", user_map)]
     p1 = st.text_input("New Password", type="password")
     p2 = st.text_input("Confirm Password", type="password")
-
-    if st.button("Reset Password"):
-        if not p1 or p1 != p2:
-            st.error("Password invalid")
-        else:
-            conn.execute(
-                "UPDATE users SET password_hash=? WHERE id=?",
-                (hash_password(p1), uid)
-            )
+    if st.button("Reset"):
+        if p1 and p1 == p2:
+            conn.execute("UPDATE users SET password_hash=? WHERE id=?",
+                         (hash_password(p1),uid))
             conn.commit()
             st.success("Password reset")
+        else:
+            st.error("Invalid password")
 
-# ======================================================
-# 5. DELETE USER
-# ======================================================
 elif menu == "🗑️ Delete User":
     st.subheader("🗑️ Delete User")
-    selected = st.selectbox("Select User", user_map.keys())
-    uid = user_map[selected]
-
+    uid = user_map[st.selectbox("Select User", user_map)]
     if st.checkbox("I understand this action is permanent"):
         if st.button("DELETE USER"):
-            conn.execute("DELETE FROM users WHERE id=?", (uid,))
+            conn.execute("DELETE FROM users WHERE id=?",(uid,))
             conn.commit()
-            st.success("User deleted")
+            st.success("Deleted")
             st.rerun()
 
 # ======================================================
-# 6. EDIT SALDO CUTI
+# LEAVE & ATTENDANCE
 # ======================================================
 elif menu == "📊 Edit Saldo Cuti":
     st.subheader("📊 Edit Saldo Cuti")
-    selected = st.selectbox("Select User", user_map.keys())
-    uid = user_map[selected]
-
+    uid = user_map[st.selectbox("Select User", user_map)]
     bal = conn.execute("""
         SELECT last_year,current_year,change_off,sick_no_doc
         FROM leave_balance WHERE user_id=?
     """,(uid,)).fetchone()
 
-    if not bal:
-        conn.execute("""
-            INSERT INTO leave_balance
-            VALUES (?,0,0,0,0,NULL)
-        """,(uid,))
-        conn.commit()
-        bal = (0,0,0,0)
-
-    with st.form("edit_balance"):
-        ly = st.number_input("Last Year", value=bal[0], min_value=0)
-        cy = st.number_input("Current Year", value=bal[1], min_value=0)
-        co = st.number_input("Change Off", value=float(bal[2]), min_value=0.0, step=0.5)
-        sick = st.number_input("Sick (No Doc)", value=bal[3], min_value=0, max_value=6)
-        submit = st.form_submit_button("Update Balance")
-
-    if submit:
-        conn.execute("""
-            UPDATE leave_balance
-            SET last_year=?,current_year=?,change_off=?,sick_no_doc=?,updated_at=DATE('now')
-            WHERE user_id=?
-        """,(ly,cy,co,sick,uid))
-        conn.commit()
-        st.success("Balance updated")
-        st.rerun()
+    with st.form("balance"):
+        ly = st.number_input("Last Year", value=bal[0])
+        cy = st.number_input("Current Year", value=bal[1])
+        co = st.number_input("Change Off", value=float(bal[2]), step=0.5)
+        sick = st.number_input("Sick (No Doc)", value=bal[3], max_value=6)
+        if st.form_submit_button("Update"):
+            conn.execute("""
+                UPDATE leave_balance SET last_year=?,current_year=?,change_off=?,sick_no_doc=?
+                WHERE user_id=?
+            """,(ly,cy,co,sick,uid))
+            conn.commit()
+            st.success("Updated")
+            st.rerun()
 
 # ======================================================
 # 7. HOLIDAY CALENDAR
@@ -487,7 +470,198 @@ elif menu == "🧾 Manage Leave History":
         "Days":r[5],
         "Status":r[6],
         "Created":r[7]
-    } for r in rows], use_container_width=True)
+    } for r in rows], width="stretch")
 
 # ======================================================
+elif menu == "🕵️ Login Activity":
+    st.subheader("🕵️ Login Activity Log")
+
+    rows = conn.execute("""
+        SELECT
+            l.created_at,
+            u.name,
+            l.email,
+            l.role,
+            l.action,
+            l.ip_address
+        FROM auth_logs l
+        LEFT JOIN users u ON u.id = l.user_id
+        ORDER BY l.created_at DESC
+        LIMIT 500
+    """).fetchall()
+
+    if not rows:
+        st.info("No login activity found")
+    else:
+        import pandas as pd
+        from datetime import datetime
+        import pytz
+
+        utc = pytz.utc
+        wib = pytz.timezone("Asia/Jakarta")
+
+        formatted = []
+        for r in rows:
+            utc_time = datetime.fromisoformat(r[0])
+            local_time = utc.localize(utc_time).astimezone(wib)
+
+            formatted.append((
+                local_time.strftime("%Y-%m-%d %H:%M:%S"),
+                r[1] or "-",        # Name
+                r[2] or "-",        # Email
+                r[3] or "-",        # Role
+                r[4].upper(),       # Action
+                r[5] or "-"         # IP Address
+            ))
+
+        df = pd.DataFrame(
+            formatted,
+            columns=[
+                "Time (WIB)",
+                "Name",
+                "Email",
+                "Role",
+                "Action",
+                "IP Address"
+            ]
+        )
+
+        st.dataframe(df, width="stretch")
+
+elif menu == "🚨 June 30 Reset (Emergency)":
+    st.subheader("🚨 June 30 Leave Reset")
+
+    st.warning("""
+    ⚠️ Digunakan hanya jika:
+    - Auto reset gagal
+    - Atas persetujuan manajemen
+    """)
+
+    confirm = st.checkbox("Saya memahami tindakan ini tidak bisa dibatalkan")
+
+    if confirm and st.button("EXECUTE JUNE 30 RESET"):
+        from core.leave_reset import run_june_30_reset
+
+        ok, msg = run_june_30_reset(executed_by=hr_id)
+
+        if ok:
+            st.success(msg)
+        else:
+            st.error(msg)
+
+elif menu == "📊 System Status":
+    st.subheader("📊 Leave System Status")
+
+    from datetime import date
+    today = date.today()
+    year = today.year
+    month = today.month
+
+    # =========================
+    # SYSTEM INFO
+    # =========================
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Today", today.isoformat())
+    c2.metric("Leave Cycle", "1 July – 30 June")
+    c3.metric("Current Year", year)
+
+    st.divider()
+
+    # =========================
+    # MONTHLY ACCRUAL STATUS
+    # =========================
+    st.markdown("### 🟢 Monthly Accrual Status")
+
+    # eligible employees
+    eligible = conn.execute("""
+        SELECT COUNT(*)
+        FROM users
+        WHERE permanent_date IS NOT NULL
+        AND join_date <= DATE('now', '-1 month')
+    """).fetchone()[0]
+
+    # accrual log bulan ini
+    accrual = conn.execute("""
+        SELECT COUNT(*), MAX(executed_at)
+        FROM accrual_logs
+        WHERE year = ? AND month = ?
+    """, (year, month)).fetchone()
+
+    accrued_count = accrual[0] or 0
+    last_run = accrual[1]
+
+    if accrued_count == 0:
+        status = "❌ NOT RUN"
+    elif accrued_count < eligible:
+        status = f"⚠️ PARTIAL ({eligible - accrued_count} missing)"
+    else:
+        status = "✅ DONE"
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Eligible Employee", eligible)
+    c2.metric("Accrued This Month", accrued_count)
+    c3.metric("Status", status)
+
+    if last_run:
+        st.caption(f"Last run at: {last_run}")
+
+    st.divider()
+
+    # =========================
+    # ANNUAL RESET STATUS (30 JUNE)
+    # =========================
+    st.markdown("### 🔴 Annual Reset Status (30 June)")
+
+    reset = conn.execute("""
+        SELECT year, executed_by, executed_at
+        FROM leave_reset_logs
+        WHERE year = ?
+    """, (year,)).fetchone()
+
+    if today < date(year, 6, 30):
+        reset_status = "ℹ️ UPCOMING"
+    elif not reset:
+        reset_status = "🚨 ACTION REQUIRED"
+    else:
+        reset_status = "✅ DONE"
+
+    executor = "-"
+    executed_at = "-"
+
+    if reset:
+        if reset[1] == 0:
+            executor = "SYSTEM"
+        else:
+            u = conn.execute(
+                "SELECT name FROM users WHERE id=?",
+                (reset[1],)
+            ).fetchone()
+            executor = u[0] if u else "Unknown"
+
+        executed_at = reset[2]
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Reset Status", reset_status)
+    c2.metric("Executed By", executor)
+    c3.metric("Executed At", executed_at)
+
+    # =========================
+    # EMERGENCY ACTION
+    # =========================
+    if reset_status == "🚨 ACTION REQUIRED":
+        st.warning("⚠️ Annual reset has not been executed yet")
+
+        confirm = st.checkbox("I understand this action cannot be undone")
+
+        if confirm and st.button("EXECUTE JUNE 30 RESET"):
+            from core.leave_reset import run_june_30_reset
+
+            ok, msg = run_june_30_reset(executed_by=hr_id)
+
+            if ok:
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
+
 conn.close()

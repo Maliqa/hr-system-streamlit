@@ -110,6 +110,31 @@ def init_db():
         FOREIGN KEY (approved_by) REFERENCES users(id)
     )
     """)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS auth_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        email TEXT,
+        role TEXT,
+        action TEXT,              -- login | logout | failed_login
+        ip_address TEXT,
+        user_agent TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+   )
+   """)
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS accrual_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        year INTEGER NOT NULL,
+        month INTEGER NOT NULL,
+        accrual_days INTEGER NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, year, month),
+        FOREIGN KEY (user_id) REFERENCES users(id)
+   )
+   """)
 
     conn.commit()
     conn.close()
