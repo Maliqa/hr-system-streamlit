@@ -7,6 +7,7 @@ from core.change_off import calculate_co
 from utils.api import api_get, api_post
 import pandas as pd
 
+
 # ======================================================
 # SESSION GUARD
 # ======================================================
@@ -50,11 +51,16 @@ cur = conn.cursor()
 # ======================================================
 # HEADER
 # ======================================================
-st.title("👤 Employee Dashboard")
-if st.button("Logout"):
-    api_post("/logout")
-    st.switch_page("app.py")
+col1, col2 = st.columns([7, 3])
 
+with col1:
+    st.title("👤 Employee Dashboard")
+    if st.button("Logout"):
+        api_post("/logout")
+        st.switch_page("app.py")
+
+with col2:
+    st.image("assets/cistech.png", width=420)
 # ======================================================
 # MENU
 # ======================================================
@@ -248,7 +254,7 @@ elif menu == MENU_CO:
     # =========================
     if work_type in SINGLE_DAY_TYPES:
         work_date = st.date_input("Work Date")
-        end_time = st.time_input("Jam Selesai")
+        end_time = st.time_input("Start On the clock? ")
 
         co = round(calculate_co(work_type, work_date, end_time, None), 2)
         st.info(f"🧮 CO Result: **{co} hari**")
