@@ -6,6 +6,8 @@ from core.holiday import calculate_working_days
 from core.change_off import calculate_co
 from utils.api import api_get, api_post
 import pandas as pd
+from utils.emailer import send_email
+from utils.email_templates import leave_request_email
 
 
 # ======================================================
@@ -182,6 +184,9 @@ elif menu == MENU_LEAVE:
     st.info(f"📅 Total Leave Requested: {total_days} working day(s)")
 
     if submit:
+        # =========================
+        # INSERT LEAVE REQUEST
+        # =========================
         cur.execute("""
             INSERT INTO leave_requests
             (user_id, leave_type, start_date, end_date, total_days, reason, status, created_at)
@@ -195,7 +200,42 @@ elif menu == MENU_LEAVE:
             reason
         ))
         conn.commit()
+
+        # =========================
+        # EMAIL NOTIFICATION TO MANAGER
+        # =========================
+        
+        mgr = conn.execute("""
+            SELECT u.name, u.email
+            FROM users u
+            JOIN users e ON e.manager_id = u.id
+            WHERE e.id = ?
+        """, (user_id,)).fetchone()
+
+
+        if mgr and mgr[1]:
+            manager_name = mgr[0]
+            manager_email = mgr[1]
+            
+            try:
+                send_email(
+                    manager_email,
+                    "Leave Request Pending Approval",
+                    leave_request_email(
+                        emp=user.get("name", "-"),
+                        manager=manager_name,
+                        typ=leave_type,
+                        start=start_date,
+                        end=end_date,
+                        days=total_days
+                    ),
+                    html=True,
+                )
+            except Exception as e:
+                st.warning(f"Email ke manager gagal: {e}")
+
         st.success("✅ Leave submitted")
+
 
 # ======================================================
 # LEAVE HISTORY

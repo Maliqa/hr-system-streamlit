@@ -5,6 +5,11 @@ from core.db import get_conn
 from core.auth import hash_password
 from core.leave_engine import run_leave_engine
 
+# ======================================================
+# SESSION STATE (ANTI BUG + NOTIFICATION)
+# ======================================================
+if "user_created" not in st.session_state:
+    st.session_state.user_created = False
 
 # ======================================================
 # UTIL
@@ -30,7 +35,6 @@ def get_managers_by_division(conn):
             "label": f"{name} ({div})"
         })
     return result
-
 
 # ======================================================
 # PAGE CONFIG
@@ -60,7 +64,7 @@ if payload.get("role") != "hr":
 hr_id = payload.get("id") or payload.get("user_id")
 
 # ======================================================
-# ENGINE
+# ENGINE + DB
 # ======================================================
 run_leave_engine()
 conn = get_conn()
@@ -69,12 +73,18 @@ conn = get_conn()
 # HEADER
 # ======================================================
 st.title("🏢 HR Admin Dashboard")
+
+# 🔔 GLOBAL NOTIFICATION
+if st.session_state.get("user_created"):
+    st.toast("✅ User berhasil dibuat", icon="🎉")
+    st.session_state.user_created = False
+
 if st.button("Logout"):
     api_post("/logout")
     st.switch_page("app.py")
 
 # ======================================================
-# HR MODULE & MENU CONFIG
+# MODULE CONFIG
 # ======================================================
 MODULES = {
     "🧍 User Management": [
@@ -101,7 +111,7 @@ MODULES = {
 }
 
 # ======================================================
-# SESSION STATE INIT (ANTI BUG)
+# SESSION INIT
 # ======================================================
 if "hr_module" not in st.session_state:
     st.session_state.hr_module = list(MODULES.keys())[0]
@@ -110,35 +120,22 @@ if "hr_menu" not in st.session_state:
     st.session_state.hr_menu = MODULES[st.session_state.hr_module][0]
 
 # ======================================================
-# MODULE SELECT (DROPDOWN)
+# MODULE SELECT
 # ======================================================
-module = st.selectbox(
-    "📦 Module",
-    options=list(MODULES.keys()),
-    key="hr_module"
-)
+module = st.selectbox("📦 Module", MODULES.keys(), key="hr_module")
 
-# ======================================================
-# RESET MENU JIKA MODULE BERUBAH
-# ======================================================
 if st.session_state.hr_menu not in MODULES[module]:
     st.session_state.hr_menu = MODULES[module][0]
 
-# ======================================================
-# MENU SELECT (RADIO)
-# ======================================================
 menu = st.radio(
     "📌 Menu",
-    options=MODULES[module],
+    MODULES[module],
     key="hr_menu",
     horizontal=True
 )
 
-# ======================================================
-# CONTEXT HEADER
-# ======================================================
-
 st.divider()
+
 # ======================================================
 # COMMON DATA
 # ======================================================
@@ -157,92 +154,41 @@ DIVISIONS = [
     "SALES", "Back Office"
 ]
 
+managers_by_division = get_managers_by_division(conn)
 
 # ======================================================
-# MANAGER DATA (WAJIB SEBELUM CREATE USER)
-# ======================================================
-managers = conn.execute("""
-    SELECT id, name, division
-    FROM users
-    WHERE role = 'manager'
-    ORDER BY name
-""").fetchall()
-
-managers_by_division = {}
-for mid, name, div in managers:
-    managers_by_division.setdefault(div, []).append({
-        "id": mid,
-        "label": f"{name} ({div})"
-    })
-
-# ======================================================
-# USER MANAGEMENT
+# ➕ CREATE USER
 # ======================================================
 if menu == "➕ Create User":
     st.subheader("➕ Create User")
 
-    # =========================
-    # STEP 1: PRE-SELECTION (REACTIVE)
-    # =========================
-    role = st.selectbox(
-        "Role",
-        ["employee", "manager", "hr"],
-        key="create_role"
-    )
-
-    division = st.selectbox(
-        "Division",
-        DIVISIONS,
-        key="create_division"
-    )
+    role = st.selectbox("Role", ["employee", "manager", "hr"])
+    division = st.selectbox("Division", DIVISIONS)
 
     manager_id = None
-
     if role == "employee":
-        available_managers = managers_by_division.get(division, [])
-
-        if not available_managers:
+        available = managers_by_division.get(division, [])
+        if not available:
             st.error(f"❌ Tidak ada manager untuk divisi {division}")
             st.stop()
 
-        manager_label = st.selectbox(
+        label = st.selectbox(
             "Manager",
-            [m["label"] for m in available_managers],
-            key="create_manager"
+            [m["label"] for m in available]
         )
-
-        manager_id = next(
-            m["id"] for m in available_managers
-            if m["label"] == manager_label
-        )
+        manager_id = next(m["id"] for m in available if m["label"] == label)
 
     st.divider()
 
-    # =========================
-    # STEP 2: FINAL FORM (STATIC)
-    # =========================
-    with st.form("create_user_form"):
+    with st.form("create_user"):
         nik = st.text_input("NIK")
         name = st.text_input("Name")
         email = st.text_input("Email")
-        join_date = st.date_input(
-            "Join Date",
-            min_value=date(1990, 1, 1),
-            max_value=date.today()
-        )
-
-        permanent_date = st.date_input(
-            "permanent_date",
-            min_value=date(1990, 1, 1),
-            max_value=date.today()
-        )
+        join_date = st.date_input("Join Date")
+        permanent_date = st.date_input("Permanent Date")
         password = st.text_input("Password", type="password")
-
         submit = st.form_submit_button("Create User")
 
-    # =========================
-    # SUBMIT
-    # =========================
     if submit:
         if role == "employee" and not manager_id:
             st.error("Employee wajib punya manager")
@@ -269,9 +215,10 @@ if menu == "➕ Create User":
         """, (uid,))
 
         conn.commit()
-        st.success("✅ User created successfully")
-        st.rerun()
 
+        # 🔔 SET NOTIFICATION FLAG
+        st.session_state.user_created = True
+        st.rerun()
 
 elif menu == "📋 User List":
     st.subheader("📋 User List")
