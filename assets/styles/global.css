@@ -1,0 +1,58 @@
+/* =========================
+   GLOBAL FONT RESET
+========================= */
+html, body, [class*="css"] {
+    font-family: "Inter", "Segoe UI", Arial, sans-serif !important;
+    color: #111827 !important;
+    background-color: #ffffff !important;
+
+    /* Matikan blur / glow */
+    -webkit-font-smoothing: auto !important;
+    -moz-osx-font-smoothing: auto !important;
+    text-rendering: geometricPrecision !important;
+}
+
+/* =========================
+   HEADINGS
+========================= */
+h1, h2, h3, h4, h5 {
+    color: #0f172a !important;
+    font-weight: 600 !important;
+}
+
+/* =========================
+   TEXT ELEMENTS
+========================= */
+p, label, span, div {
+    color: #111827 !important;
+    font-weight: 400;
+}
+
+/* =========================
+   METRICS
+========================= */
+[data-testid="stMetricValue"] {
+    color: #020617 !important;
+    font-weight: 700 !important;
+}
+
+/* =========================
+   BUTTONS
+========================= */
+button {
+    font-weight: 500 !important;
+}
+
+/* =========================
+   TABLE
+========================= */
+thead, tbody, td, th {
+    color: #020617 !important;
+}
+
+/* =========================
+   REMOVE SHADOWS
+========================= */
+* {
+    text-shadow: none !important;
+}

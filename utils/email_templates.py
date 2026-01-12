@@ -1,20 +1,25 @@
-
-def leave_request_email(emp, manager, typ, start, end, days):
+def leave_request_email(emp_name, type, start, end, days):
     return f"""
-    <h3>📩 Leave Request Pending Approval</h3>
-    <p>Dear {manager},</p>
+    <html>
+    <body>
+        <h3>📩 Leave Request Pending Approval</h3>
 
-    <p><b>{emp}</b> has submitted a leave request:</p>
+        <p>
+            <strong>{emp_name}</strong> has submitted a leave request:
+        </p>
 
-    <ul>
-        <li><b>Type:</b> {typ}</li>
-        <li><b>Period:</b> {start} → {end}</li>
-        <li><b>Total Days:</b> {days}</li>
-    </ul>
+        <ul>
+            <li><b>Type:</b> {type}</li>
+            <li><b>Period:</b> {start} → {end}</li>
+            <li><b>Total Days:</b> {days}</li>
+        </ul>
 
-    <p>Please login to the system to approve or reject.</p>
-    <br>
-    <p>HR System</p>
+        <p>Please login to the system to approve or reject.</p>
+
+        <br>
+        <small>HR System</small>
+    </body>
+    </html>
     """
 
 

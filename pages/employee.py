@@ -202,29 +202,36 @@ elif menu == MENU_LEAVE:
         conn.commit()
 
         # =========================
-        # EMAIL NOTIFICATION TO MANAGER
+        # GET EMPLOYEE NAME (FIX UTAMA)
         # =========================
-        
-        mgr = conn.execute("""
+        emp_row = cur.execute(
+            "SELECT name FROM users WHERE id=?",
+            (user_id,)
+        ).fetchone()
+
+        emp_name = emp_row[0] if emp_row else "Employee"
+
+        # =========================
+        # GET MANAGER EMAIL
+        # =========================
+        mgr = cur.execute("""
             SELECT u.name, u.email
             FROM users u
             JOIN users e ON e.manager_id = u.id
             WHERE e.id = ?
         """, (user_id,)).fetchone()
 
-
         if mgr and mgr[1]:
             manager_name = mgr[0]
             manager_email = mgr[1]
-            
+
             try:
                 send_email(
-                    manager_email,
-                    "Leave Request Pending Approval",
-                    leave_request_email(
-                        emp=user.get("name", "-"),
-                        manager=manager_name,
-                        typ=leave_type,
+                    to_email=manager_email,
+                    subject="Leave Request Pending Approval",
+                    body=leave_request_email(
+                        emp_name=emp_name,   # 🔥 SUDAH BENAR
+                        type=leave_type,
                         start=start_date,
                         end=end_date,
                         days=total_days
@@ -235,6 +242,7 @@ elif menu == MENU_LEAVE:
                 st.warning(f"Email ke manager gagal: {e}")
 
         st.success("✅ Leave submitted")
+
 
 
 # ======================================================

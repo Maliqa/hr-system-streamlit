@@ -4,6 +4,9 @@ from utils.api import api_get, api_post
 from core.db import get_conn
 from core.auth import hash_password
 from core.leave_engine import run_leave_engine
+from utils.ui import load_css
+
+
 
 # ======================================================
 # SESSION STATE (ANTI BUG + NOTIFICATION)
@@ -40,6 +43,8 @@ def get_managers_by_division(conn):
 # PAGE CONFIG
 # ======================================================
 st.set_page_config(page_title="HR Admin Dashboard", layout="wide")
+load_css("assets/styles/global.css")
+
 st.markdown("""
 <style>
 section[data-testid="stSidebar"] { display: none; }
@@ -72,16 +77,30 @@ conn = get_conn()
 # ======================================================
 # HEADER
 # ======================================================
-st.title("🏢 HR Admin Dashboard")
 
-# 🔔 GLOBAL NOTIFICATION
-if st.session_state.get("user_created"):
-    st.toast("✅ User berhasil dibuat", icon="🎉")
-    st.session_state.user_created = False
+col1, col2 = st.columns([7, 3], vertical_alignment="center")
 
-if st.button("Logout"):
-    api_post("/logout")
-    st.switch_page("app.py")
+with col1:
+    st.title("🏢 HR Admin Dashboard")
+
+    # 🔔 GLOBAL NOTIFICATION
+    if st.session_state.get("user_created"):
+        st.toast("✅ User berhasil dibuat", icon="🎉")
+        st.session_state.user_created = False
+
+with col2:
+    c_logo, c_logout = st.columns([3, 1], vertical_alignment="center")
+
+    with c_logo:
+        st.image("assets/cistech.png", width=220)
+
+    with c_logout:
+        if st.button("Logout"):
+            api_post("/logout")
+            st.switch_page("app.py")
+
+st.divider()
+
 
 # ======================================================
 # MODULE CONFIG
@@ -107,6 +126,7 @@ MODULES = {
         "📊 System Status",
         "🕵️ Login Activity",
         "🚨 June 30 Reset (Emergency)",
+        "🗄️ Archive Leave Data (FULL)"
     ],
 }
 
@@ -790,5 +810,74 @@ elif menu == "📊 System Status":
                 st.rerun()
             else:
                 st.error(msg)
+
+elif menu == "🗄️ Archive Leave Data (FULL)":
+    st.subheader("🗄️ Full Archive Leave Data Tahunan")
+
+    current_year = date.today().year
+
+    year = st.selectbox(
+        "Pilih Tahun yang akan ditutup",
+        list(range(current_year, 2019, -1))
+    )
+
+    total = conn.execute("""
+        SELECT COUNT(*)
+        FROM leave_requests
+        WHERE strftime('%Y', start_date) = ?
+    """, (str(year),)).fetchone()[0]
+
+    st.info(f"📦 Total leave request tahun {year}: **{total} record**")
+
+    if year == current_year:
+        st.warning("⚠️ Ini adalah TAHUN BERJALAN")
+
+    st.error("""
+    ⚠️ SEMUA status akan di-archive:
+    - submitted
+    - manager_approved
+    - manager_rejected
+    - hr_approved
+    - hr_rejected
+
+    Tindakan ini TIDAK bisa dibatalkan
+    """)
+
+    confirm1 = st.checkbox("Saya memahami semua request akan ditutup")
+    confirm2 = st.checkbox("Saya bertanggung jawab penuh")
+
+    if confirm1 and confirm2 and st.button("🔒 ARCHIVE SEMUA DATA"):
+        try:
+            conn.execute("BEGIN")
+
+            conn.execute("""
+                INSERT INTO leave_requests_archive
+                SELECT *,
+                       CURRENT_TIMESTAMP,
+                       ?,
+                       'FULL YEAR ARCHIVE'
+                FROM leave_requests
+                WHERE strftime('%Y', start_date) = ?
+            """, (hr_id, str(year)))
+
+            conn.execute("""
+                DELETE FROM leave_requests
+                WHERE strftime('%Y', start_date) = ?
+            """, (str(year),))
+
+            conn.execute("""
+                INSERT INTO archive_logs (year,total_rows,archived_by)
+                VALUES (?,?,?)
+            """, (year, total, hr_id))
+
+            conn.commit()
+            st.success(f"✅ Tahun {year} berhasil di-archive")
+            st.rerun()
+
+        except Exception as e:
+            conn.rollback()
+            st.error(str(e))
+
+
 
 conn.close()
