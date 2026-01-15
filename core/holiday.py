@@ -25,6 +25,14 @@ def is_workday(d: date, holidays: set) -> bool:
         return False
     return True
 
+def get_day_category(d: date) -> str:
+    holidays = load_holidays()
+
+    if d in holidays:
+        return "holiday"
+    if d.weekday() >= 5:
+        return "weekend"
+    return "workday"
 
 def calculate_working_days(start: date, end: date) -> int:
     holidays = load_holidays()

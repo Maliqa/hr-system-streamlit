@@ -33,4 +33,29 @@ def leave_status_email(name, typ, status, note=None):
     <p>— HR System</p>
     """
 
+def change_off_request_email(
+    emp_name,
+    work_type,
+    period,
+    co_days,
+    day_type
+):
+    return f"""
+    <html>
+    <body style="font-family:Arial, sans-serif;">
+        <h3>📦 Change Off Claim Pending Approval</h3>
+
+        <p><strong>Employee:</strong> {emp_name}</p>
+        <p><strong>Work Type:</strong> {work_type.upper()}</p>
+        <p><strong>Period:</strong> {period}</p>
+        <p><strong>Day Type:</strong> {day_type.upper()}</p>
+        <p><strong>Change Off:</strong> {co_days} day(s)</p>
+
+        <hr>
+        <p style="font-size:12px;color:#6b7280;">
+            This is an automated notification. Please review in HR System.
+        </p>
+    </body>
+    </html>
+    """
 

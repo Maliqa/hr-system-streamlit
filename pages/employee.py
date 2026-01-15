@@ -1,17 +1,21 @@
 import os
 import streamlit as st
 from datetime import date, datetime, timedelta, time as dtime
+import pandas as pd
+
 from core.db import get_conn
 from core.holiday import calculate_working_days
+from core.holiday import load_holidays
 from core.change_off import calculate_co
 from utils.api import api_get, api_post
-import pandas as pd
 from utils.emailer import send_email
-from utils.email_templates import leave_request_email
-
+from utils.email_templates import (
+    leave_request_email,
+    change_off_request_email
+)
 
 # ======================================================
-# SESSION GUARD
+# PAGE CONFIG + SESSION GUARD
 # ======================================================
 st.set_page_config(page_title="Employee Dashboard", layout="wide")
 st.markdown("""
@@ -51,6 +55,16 @@ conn = get_conn()
 cur = conn.cursor()
 
 # ======================================================
+# GET EMPLOYEE NAME (🔥 FIX UTAMA, GLOBAL)
+# ======================================================
+emp_row = cur.execute(
+    "SELECT name FROM users WHERE id=?",
+    (user_id,)
+).fetchone()
+
+EMP_NAME = emp_row[0] if emp_row else "Employee"
+
+# ======================================================
 # HEADER
 # ======================================================
 col1, col2 = st.columns([7, 3])
@@ -63,6 +77,7 @@ with col1:
 
 with col2:
     st.image("assets/cistech.png", width=420)
+
 # ======================================================
 # MENU
 # ======================================================
@@ -79,7 +94,7 @@ menu = st.radio(
 )
 
 # ======================================================
-# PROFILE & SALDO (UI UPGRADED)
+# PROFILE & SALDO
 # ======================================================
 if menu == MENU_PROFILE:
     row = cur.execute("""
@@ -94,62 +109,24 @@ if menu == MENU_PROFILE:
 
     if row:
         nik, name, email, role, division, join, perm = row
-        status = "Permanent" if perm else "Probation"
 
-        # =========================
-        # EMPLOYEE CARD
-        # =========================
         st.markdown(f"""
-        <div style="
-            background:#f8fafc;
-            border:1px solid #e5e7eb;
-            border-radius:14px;
-            padding:20px;
-            margin-bottom:16px;
-        ">
-            <h3 style="margin-bottom:4px;">👤 {name}</h3>
-            <p style="margin:0;color:#6b7280;">
-                {role.upper()} • {division} • NIK {nik}
-            </p>
-            <p style="margin-top:6px;color:#374151;">
-                📧 {email}
-            </p>
-            <p style="margin-top:6px;color:#374151;font-size:14px;">
-    📅 Join Date: <strong>{join}</strong><br>
-    🏁 Permanent Date: <strong>{perm if perm else '-'}</strong>
-            </p>
+        <div style="background:#f8fafc;border:1px solid #e5e7eb;
+        border-radius:14px;padding:20px;margin-bottom:16px;">
+            <h3>👤 {name}</h3>
+            <p>{role.upper()} • {division} • NIK {nik}</p>
+            <p>📧 {email}</p>
+            <p>📅 Join Date: {join}<br>🏁 Permanent Date: {perm or '-'}</p>
         </div>
         """, unsafe_allow_html=True)
 
     if saldo:
         ly, cy, co, sick = saldo
-
-        st.divider()
-        st.subheader("💼 Leave Balance")
-
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("🌴 Last Year Leave", ly, help="Sisa cuti tahun lalu")
-        c2.metric("📅 Current Year Leave", cy, help="Sisa cuti tahun berjalan")
-        c3.metric("🧳 Change Off", round(co, 2), help="Hasil lembur")
-        c4.metric("🤒 Sick (No Doc)", sick, help="Maksimal 6 hari / tahun")
-
-        if cy <= 2:
-            st.warning("⚠️ Sisa cuti tahun berjalan hampir habis")
-
-# ======================================================
-# SESSION STATE INIT
-# ======================================================
-if "leave_submitted" not in st.session_state:
-    st.session_state.leave_submitted = False
-
-if "leave_type" not in st.session_state:
-    st.session_state.leave_type = "Personal Leave"
-
-if "leave_start_date" not in st.session_state:
-    st.session_state.leave_start_date = date.today()
-
-if "leave_end_date" not in st.session_state:
-    st.session_state.leave_end_date = date.today()
+        c1.metric("🌴 Last Year", ly)
+        c2.metric("📅 Current Year", cy)
+        c3.metric("🧳 Change Off", round(co, 2))
+        c4.metric("🤒 Sick (No Doc)", sick)
 
 # ======================================================
 # SUBMIT LEAVE
@@ -157,40 +134,91 @@ if "leave_end_date" not in st.session_state:
 elif menu == MENU_LEAVE:
     st.subheader("➕ Submit Leave Request")
 
-    with st.form("leave_form"):
-        leave_type = st.selectbox(
-            "Leave Type",
-            ["Personal Leave", "Change Off", "Sick (No Doc)"],
-            key="leave_type"
-        )
+    # =========================
+    # AMBIL SALDO
+    # =========================
+    saldo = cur.execute("""
+        SELECT current_year, change_off
+        FROM leave_balance
+        WHERE user_id=?
+    """, (user_id,)).fetchone()
 
-        c1, c2 = st.columns(2)
-        with c1:
-            st.date_input("Start Date", key="leave_start_date")
-        with c2:
-            st.date_input("End Date", key="leave_end_date")
+    saldo_personal = saldo[0] if saldo else 0
+    saldo_co = saldo[1] if saldo else 0
 
-        reason = st.text_area("Reason", height=120)
-        submit = st.form_submit_button("Submit Leave")
+    # =========================
+    # FORM INPUT
+    # =========================
+    leave_type = st.selectbox(
+        "Leave Type",
+        ["Personal Leave", "Change Off", "Sick (No Doc)"]
+    )
 
-    start_date = st.session_state.leave_start_date
-    end_date = st.session_state.leave_end_date
+    c1, c2 = st.columns(2)
+    with c1:
+        start_date = st.date_input("Start Date", date.today())
+    with c2:
+        end_date = st.date_input("End Date", date.today())
 
+    reason = st.text_area("Reason")
+
+    # =========================
+    # VALIDASI TANGGAL
+    # =========================
     if end_date < start_date:
-        st.error("End Date tidak boleh lebih kecil dari Start Date")
+        st.error("❌ End Date tidak boleh lebih kecil dari Start Date")
         st.stop()
 
     total_days = calculate_working_days(start_date, end_date)
     st.info(f"📅 Total Leave Requested: {total_days} working day(s)")
 
+    # =========================
+    # LOGIC DISABLE SUBMIT
+    # =========================
+    submit_disabled = False
+
+    if leave_type == "Personal Leave":
+        if saldo_personal < total_days:
+            st.error(
+                f"❌ Saldo Personal Leave tidak mencukupi "
+                f"(Sisa: {saldo_personal} hari)"
+            )
+            submit_disabled = True
+        else:
+            st.warning(
+                f"⚠️ Anda akan menggunakan {total_days} hari Personal Leave.\n"
+                f"Sisa saldo: {saldo_personal - total_days} hari"
+            )
+
+    elif leave_type == "Change Off":
+        if saldo_co < total_days:
+            st.error(
+                f"❌ Saldo Change Off tidak mencukupi "
+                f"(Sisa: {saldo_co} hari)"
+            )
+            submit_disabled = True
+        else:
+            st.warning(
+                f"⚠️ {total_days} hari Change Off akan ditukar menjadi cuti.\n"
+                f"Sisa saldo CO: {saldo_co - total_days} hari"
+            )
+
+    elif leave_type == "Sick (No Doc)":
+        st.info("ℹ️ Sick Leave tidak menggunakan saldo cuti.")
+
+    # =========================
+    # SUBMIT BUTTON (AUTO DISABLE)
+    # =========================
+    submit = st.button(
+        "Submit Leave",
+        disabled=submit_disabled
+    )
+
     if submit:
-        # =========================
-        # INSERT LEAVE REQUEST
-        # =========================
         cur.execute("""
             INSERT INTO leave_requests
-            (user_id, leave_type, start_date, end_date, total_days, reason, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'submitted', DATE('now'))
+            (user_id, leave_type, start_date, end_date, total_days, reason, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'submitted')
         """, (
             user_id,
             leave_type,
@@ -201,83 +229,47 @@ elif menu == MENU_LEAVE:
         ))
         conn.commit()
 
-        # =========================
-        # GET EMPLOYEE NAME (FIX UTAMA)
-        # =========================
-        emp_row = cur.execute(
-            "SELECT name FROM users WHERE id=?",
-            (user_id,)
-        ).fetchone()
-
-        emp_name = emp_row[0] if emp_row else "Employee"
-
-        # =========================
-        # GET MANAGER EMAIL
-        # =========================
+        # EMAIL MANAGER
         mgr = cur.execute("""
-            SELECT u.name, u.email
+            SELECT u.email
             FROM users u
-            JOIN users e ON e.manager_id = u.id
-            WHERE e.id = ?
+            JOIN users e ON e.manager_id=u.id
+            WHERE e.id=?
         """, (user_id,)).fetchone()
 
-        if mgr and mgr[1]:
-            manager_name = mgr[0]
-            manager_email = mgr[1]
-
-            try:
-                send_email(
-                    to_email=manager_email,
-                    subject="Leave Request Pending Approval",
-                    body=leave_request_email(
-                        emp_name=emp_name,   # 🔥 SUDAH BENAR
-                        type=leave_type,
-                        start=start_date,
-                        end=end_date,
-                        days=total_days
-                    ),
-                    html=True,
-                )
-            except Exception as e:
-                st.warning(f"Email ke manager gagal: {e}")
+        if mgr:
+            send_email(
+                to_email=mgr[0],
+                subject="Leave Request Pending Approval",
+                body=leave_request_email(
+                    emp_name=EMP_NAME,
+                    type=leave_type,
+                    start=start_date,
+                    end=end_date,
+                    days=total_days
+                ),
+                html=True
+            )
 
         st.success("✅ Leave submitted")
 
 
-
 # ======================================================
-# LEAVE HISTORY
-# ======================================================
-elif menu == MENU_HISTORY:
-    rows = cur.execute("""
-        SELECT start_date,end_date,leave_type,total_days,status,created_at
-        FROM leave_requests
-        WHERE user_id=?
-        ORDER BY created_at DESC
-    """, (user_id,)).fetchall()
-
-    df = pd.DataFrame(
-        rows,
-        columns=["Start","End","Type","Days","Status","Submitted"]
-    )
-    st.dataframe(df, width="stretch")
-
-# ======================================================
-# SUBMIT CHANGE OFF CLAIM (FINAL ENTERPRISE VERSION)
+# SUBMIT CHANGE OFF CLAIM (REWRITE FULL – STABLE)
 # ======================================================
 elif menu == MENU_CO:
     st.subheader("📦 Submit Change Off Claim")
 
-    # =========================
+    # =====================================
     # CONSTANTS
-    # =========================
+    # =====================================
     SINGLE_DAY_TYPES = ["travelling", "standby"]
     MULTI_DAY_TYPES = ["non-shift", "back-office", "2-shift", "3-shift"]
     NO_UPLOAD_TYPES = ["travelling", "standby"]
 
-    # =========================
+    # =====================================
     # BASIC INPUT
-    # =========================
+    # =====================================
     category = st.selectbox(
         "Employee Category",
         ["Teknisi / Engineer", "Back Office / Workshop"]
@@ -285,9 +277,12 @@ elif menu == MENU_CO:
 
     work_type = st.selectbox(
         "Work Type",
-        ["travelling", "standby", "non-shift", "back-office", "2-shift", "3-shift"]
+        SINGLE_DAY_TYPES + MULTI_DAY_TYPES
     )
 
+    # =====================================
+    # FILE UPLOAD
+    # =====================================
     uploaded = None
     if work_type not in NO_UPLOAD_TYPES:
         uploaded = st.file_uploader(
@@ -295,23 +290,50 @@ elif menu == MENU_CO:
             type=["pdf"]
         )
     else:
-        st.info("ℹ️ Travelling & Standby tidak memerlukan upload dokumen")
+        st.info("ℹ️ Travelling & Standby tidak perlu upload dokumen")
 
-    # =========================
+    # =====================================
+    # EMPLOYEE NAME
+    # =====================================
+    emp_row = cur.execute(
+        "SELECT name FROM users WHERE id=?",
+        (user_id,)
+    ).fetchone()
+    emp_name = emp_row[0] if emp_row else "Employee"
+
+    # =====================================
     # MODE A — SINGLE DAY
-    # =========================
+    # =====================================
     if work_type in SINGLE_DAY_TYPES:
+
+        st.markdown("### 📅 Work Detail (Single Day)")
+
+        # =========================
+        # INPUT USER
+        # =========================
         work_date = st.date_input("Work Date")
-        end_time = st.time_input("Start On the clock? ")
+        start_time = st.time_input("Start Time", value=dtime(8, 0))
+        end_time = st.time_input("End Time", value=dtime(17, 0))
 
-        co = round(calculate_co(work_type, work_date, end_time, None), 2)
-        st.info(f"🧮 CO Result: **{co} hari**")
+        # =========================
+        # 🔥 INI TEMPAT PEMANGGILAN calculate_co
+        # =========================
+        co, day_type = calculate_co(
+            category=category,
+            work_type=work_type,
+            work_date=work_date,
+            start_time=start_time,
+            end_time=end_time
+        )
 
-        if st.button("Submit"):
-            if work_type not in NO_UPLOAD_TYPES and not uploaded:
-                st.error("PDF wajib diupload")
-                st.stop()
+        # =========================
+        # DISPLAY KE USER
+        # =========================
+        st.info(f"🧮 CO Result: **{co} day(s)**")
+        st.caption(f"📅 Day Type: **{day_type.upper()}**")
 
+
+        if st.button("Submit Change Off"):
             if co <= 0:
                 st.error("CO Result = 0, tidak bisa diajukan")
                 st.stop()
@@ -325,6 +347,12 @@ elif menu == MENU_CO:
                 with open(fpath, "wb") as f:
                     f.write(uploaded.getbuffer())
 
+            # Calculate hours
+            hours = (
+                datetime.combine(work_date, end_time)
+                - datetime.combine(work_date, start_time)
+            ).seconds / 3600
+
             cur.execute("""
                 INSERT INTO change_off_claims (
                     user_id, category, work_type, work_date,
@@ -336,20 +364,44 @@ elif menu == MENU_CO:
                 category,
                 work_type,
                 work_date.isoformat(),
-                None,
+                hours,
                 co,
-                f"{work_type.upper()} activity",
+                f"{work_type.upper()} ({day_type})",
                 fpath
             ))
-
             conn.commit()
-            st.success("✅ Change Off submitted (single-day)")
-            st.rerun()
 
-    # =========================
+            # EMAIL MANAGER
+            mgr = cur.execute("""
+                SELECT u.email
+                FROM users u
+                JOIN users e ON e.manager_id = u.id
+                WHERE e.id = ?
+            """, (user_id,)).fetchone()
+
+            if mgr and mgr[0]:
+                send_email(
+                    to_email=mgr[0],
+                    subject="Change Off Claim Pending Approval",
+                    body=change_off_request_email(
+                        emp_name=emp_name,
+                        work_type=work_type,
+                        period=str(work_date),
+                        day_type=day_type,
+                        co_days=co
+                    ),
+                    html=True
+                )
+
+            st.success("✅ Change Off submitted (single day)")
+            
+
+    # =====================================
     # MODE B — MULTI DAY
-    # =========================
+    # =====================================
     else:
+        st.markdown("### 📅 Work Period")
+
         col1, col2 = st.columns(2)
         with col1:
             start_date = st.date_input("Start Date")
@@ -372,35 +424,35 @@ elif menu == MENU_CO:
 
         for d in daterange(start_date, end_date):
             with st.expander(f"📅 {d}"):
-                c1, c2 = st.columns(2)
-                with c1:
-                    start_time = st.time_input(
-                        "Start Time", value=dtime(8, 0), key=f"s_{d}"
-                    )
-                with c2:
-                    end_time = st.time_input(
-                        "End Time", value=dtime(17, 0), key=f"e_{d}"
-                    )
 
-                desc = st.text_input(
-                    "Activity Description", key=f"d_{d}"
+                start_time = st.time_input(
+                    "Start Time", value=dtime(8, 0), key=f"s_{d}"
+                )
+                end_time = st.time_input(
+                    "End Time", value=dtime(17, 0), key=f"e_{d}"
                 )
 
-                hours = (
-                    datetime.combine(d, end_time)
-                    - datetime.combine(d, start_time)
-                ).seconds / 3600
+                # =========================
+                # 🔥 PEMANGGILAN calculate_co
+                # =========================
+                co, day_type = calculate_co(
+                    category=category,
+                    work_type=work_type,
+                    work_date=d,
+                    start_time=start_time,
+                    end_time=end_time
+                )
 
-                co = round(calculate_co(work_type, d, end_time, hours), 2)
+                st.info(f"CO Result: **{co} day(s)**")
+                st.caption(f"📅 Day Type: **{day_type.upper()}**")
+
+                daily_rows.append((d, co, day_type))
                 total_co += co
 
-                st.info(f"CO Result: **{co} hari**")
 
-                daily_rows.append((d, hours, co, desc))
+        st.success(f"🧮 TOTAL CO: **{round(total_co, 2)} day(s)**")
 
-        st.success(f"🧮 TOTAL CO: **{round(total_co,2)} hari**")
-
-        if st.button("Submit"):
+        if st.button("Submit Change Off"):
             if not uploaded:
                 st.error("PDF wajib diupload")
                 st.stop()
@@ -417,9 +469,15 @@ elif menu == MENU_CO:
             with open(fpath, "wb") as f:
                 f.write(uploaded.getbuffer())
 
-            for d, hrs, co, desc in daily_rows:
+            for d, co, day_type in daily_rows:
                 if co <= 0:
                     continue
+
+                # Calculate hours for each day
+                hours = (
+                    datetime.combine(d, dtime(17, 0))  # default end time
+                    - datetime.combine(d, dtime(8, 0))  # default start time
+                ).seconds / 3600
 
                 cur.execute("""
                     INSERT INTO change_off_claims (
@@ -432,32 +490,64 @@ elif menu == MENU_CO:
                     category,
                     work_type,
                     d.isoformat(),
-                    hrs,
+                    hours,
                     co,
-                    desc or f"{work_type} activity",
+                    f"{work_type.upper()} ({day_type})",
                     fpath
                 ))
 
             conn.commit()
-            st.success("✅ Change Off multi-day submitted")
-            st.rerun()
+
+            # EMAIL MANAGER
+            mgr = cur.execute("""
+                SELECT u.email
+                FROM users u
+                JOIN users e ON e.manager_id = u.id
+                WHERE e.id = ?
+            """, (user_id,)).fetchone()
+
+            if mgr and mgr[0]:
+                send_email(
+                    to_email=mgr[0],
+                    subject="Change Off Claim Pending Approval",
+                    body=change_off_request_email(
+                        emp_name=emp_name,
+                        work_type=work_type,
+                        period=str(work_date),
+                        co_days=co,
+                        day_type=day_type
+                    ),
+                    html=True
+                )
+
+            st.success("✅ Change Off submitted (multi-day)")
+            
+
 
 
 # ======================================================
-# CHANGE OFF HISTORY
+# HISTORY
 # ======================================================
-elif menu == MENU_CO_HISTORY:
+elif menu == MENU_HISTORY:
     rows = cur.execute("""
-        SELECT work_date,co_days,description,status,created_at
-        FROM change_off_claims
-        WHERE user_id=?
-        ORDER BY work_date DESC
+        SELECT start_date,end_date,leave_type,total_days,status
+        FROM leave_requests WHERE user_id=?
     """, (user_id,)).fetchall()
 
-    df = pd.DataFrame(
+    st.dataframe(pd.DataFrame(
         rows,
-        columns=["Work Date","CO Days","Description","Status","Submitted"]
-    )
-    st.dataframe(df, width="stretch")
+        columns=["Start", "End", "Type", "Days", "Status"]
+    ))
+
+elif menu == MENU_CO_HISTORY:
+    rows = cur.execute("""
+        SELECT work_date,co_days,status
+        FROM change_off_claims WHERE user_id=?
+    """, (user_id,)).fetchall()
+
+    st.dataframe(pd.DataFrame(
+        rows,
+        columns=["Work Date", "CO Days", "Status"]
+    ))
 
 conn.close()
