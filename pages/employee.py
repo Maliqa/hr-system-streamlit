@@ -76,7 +76,7 @@ with col1:
         st.switch_page("app.py")
 
 with col2:
-    st.image("assets/cistech.png", width=420)
+    st.image("assets/cistech.png", width=250)
 
 # ======================================================
 # MENU
@@ -254,18 +254,15 @@ elif menu == MENU_LEAVE:
         st.success("✅ Leave submitted")
 
 
+
+
 # ======================================================
-# SUBMIT CHANGE OFF CLAIM (REWRITE FULL – STABLE)
+# SUBMIT CHANGE OFF CLAIM (REVISED – CHECKBOX BONUS)
 # ======================================================
 elif menu == MENU_CO:
     st.subheader("📦 Submit Change Off Claim")
 
-    # =====================================
-    # CONSTANTS
-    # =====================================
-    SINGLE_DAY_TYPES = ["travelling", "standby"]
-    MULTI_DAY_TYPES = ["non-shift", "back-office", "2-shift", "3-shift"]
-    NO_UPLOAD_TYPES = ["travelling", "standby"]
+    holidays = load_holidays()
 
     # =====================================
     # BASIC INPUT
@@ -276,254 +273,164 @@ elif menu == MENU_CO:
     )
 
     work_type = st.selectbox(
-        "Work Type",
-        SINGLE_DAY_TYPES + MULTI_DAY_TYPES
+        "Main Work Type",
+        ["non-shift", "2-shift", "3-shift", "back-office"]
     )
 
     # =====================================
-    # FILE UPLOAD
+    # OPTIONAL ACTIVITY (CHECKBOX)
     # =====================================
-    uploaded = None
-    if work_type not in NO_UPLOAD_TYPES:
-        uploaded = st.file_uploader(
-            "Upload SPL / Timesheet (PDF)",
-            type=["pdf"]
-        )
-    else:
-        st.info("ℹ️ Travelling & Standby tidak perlu upload dokumen")
+    st.markdown("### ➕ Additional Activity (Optional)")
+    colx, coly = st.columns(2)
 
-    # =====================================
-    # EMPLOYEE NAME
-    # =====================================
-    emp_row = cur.execute(
-        "SELECT name FROM users WHERE id=?",
-        (user_id,)
-    ).fetchone()
-    emp_name = emp_row[0] if emp_row else "Employee"
+    with colx:
+        is_travelling = st.checkbox("✈️ Travelling")
+
+    with coly:
+        is_standby = st.checkbox("🕒 Standby (Luar Kota)")
+
 
     # =====================================
-    # MODE A — SINGLE DAY
+    # MODE SINGLE DAY
     # =====================================
-    if work_type in SINGLE_DAY_TYPES:
+    st.markdown("### 📅 Work Detail")
 
-        st.markdown("### 📅 Work Detail (Single Day)")
+    work_date = st.date_input("Work Date", key="co_date")
+    start_time = st.time_input("Start Time", value=dtime(8, 0))
+    end_time = st.time_input("End Time", value=dtime(17, 0))
 
-        # =========================
-        # INPUT USER
-        # =========================
-        work_date = st.date_input("Work Date")
-        start_time = st.time_input("Start Time", value=dtime(8, 0))
-        end_time = st.time_input("End Time", value=dtime(17, 0))
-
-        # =========================
-        # 🔥 INI TEMPAT PEMANGGILAN calculate_co
-        # =========================
-        co, day_type = calculate_co(
-            category=category,
-            work_type=work_type,
-            work_date=work_date,
-            start_time=start_time,
-            end_time=end_time
-        )
-
-        # =========================
-        # DISPLAY KE USER
-        # =========================
-        st.info(f"🧮 CO Result: **{co} day(s)**")
-        st.caption(f"📅 Day Type: **{day_type.upper()}**")
-
-
-        if st.button("Submit Change Off"):
-            if co <= 0:
-                st.error("CO Result = 0, tidak bisa diajukan")
-                st.stop()
-
-            fpath = None
-            if uploaded:
-                folder = f"uploads/change_off/{user_id}"
-                os.makedirs(folder, exist_ok=True)
-                fname = f"CO_{user_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
-                fpath = os.path.join(folder, fname)
-                with open(fpath, "wb") as f:
-                    f.write(uploaded.getbuffer())
-
-            # Calculate hours
-            hours = (
-                datetime.combine(work_date, end_time)
-                - datetime.combine(work_date, start_time)
-            ).seconds / 3600
-
-            cur.execute("""
-                INSERT INTO change_off_claims (
-                    user_id, category, work_type, work_date,
-                    daily_hours, co_days, description, attachment, status
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'submitted')
-            """, (
-                user_id,
-                category,
-                work_type,
-                work_date.isoformat(),
-                hours,
-                co,
-                f"{work_type.upper()} ({day_type})",
-                fpath
-            ))
-            conn.commit()
-
-            # EMAIL MANAGER
-            mgr = cur.execute("""
-                SELECT u.email
-                FROM users u
-                JOIN users e ON e.manager_id = u.id
-                WHERE e.id = ?
-            """, (user_id,)).fetchone()
-
-            if mgr and mgr[0]:
-                send_email(
-                    to_email=mgr[0],
-                    subject="Change Off Claim Pending Approval",
-                    body=change_off_request_email(
-                        emp_name=emp_name,
-                        work_type=work_type,
-                        period=str(work_date),
-                        day_type=day_type,
-                        co_days=co
-                    ),
-                    html=True
-                )
-
-            st.success("✅ Change Off submitted (single day)")
-            
+    comment = st.text_area(
+        "📝 Activity / Work Description",
+        placeholder="Contoh: Maintenance panel / Travelling site A ke B"
+    )
 
     # =====================================
-    # MODE B — MULTI DAY
+    # MAIN CO CALCULATION (BASE)
     # =====================================
-    else:
-        st.markdown("### 📅 Work Period")
+    co_base, day_type = calculate_co(
+        category=category,
+        work_type=work_type,
+        work_date=work_date,
+        start_time=start_time,
+        end_time=end_time
+    )
 
-        col1, col2 = st.columns(2)
-        with col1:
-            start_date = st.date_input("Start Date")
-        with col2:
-            end_date = st.date_input("End Date")
+    total_co = co_base
+    detail_notes = [f"{work_type.upper()} ({day_type})"]
 
-        if end_date < start_date:
-            st.error("End Date tidak boleh lebih kecil dari Start Date")
-            st.stop()
+    # =====================================
+    # ADDITIONAL TRAVELLING
+    # =====================================
+    if is_travelling:
+        if day_type in ["weekend", "holiday"]:
+            if start_time < dtime(12, 0):
+                total_co += 0.5
+                detail_notes.append("Travelling < 12:00 (+0.5)")
+            else:
+                total_co += 0.5
+                detail_notes.append("Travelling > 12:00 (+0.5)")
 
-        st.divider()
-        st.markdown("### 📋 Daily Work Detail")
+    # =====================================
+    # ADDITIONAL STANDBY
+    # =====================================
+    if is_standby and day_type in ["weekend", "holiday"]:
+        total_co += 0.5
+        detail_notes.append("Standby (+0.5)")
 
-        daily_rows = []
-        total_co = 0.0
+    # =====================================
+    # DISPLAY RESULT
+    # =====================================
+    st.info(f"🧮 Total Change Off: **{round(total_co, 2)} day(s)**")
+    st.caption(" | ".join(detail_notes))
 
-        def daterange(s, e):
-            for n in range((e - s).days + 1):
-                yield s + timedelta(days=n)
+    # =====================================
+    # VALIDATION
+    # =====================================
+    submit_disabled = False
 
-        for d in daterange(start_date, end_date):
-            with st.expander(f"📅 {d}"):
+    if total_co <= 0:
+        st.warning("Tidak ada CO yang bisa diklaim")
+        submit_disabled = True
 
-                start_time = st.time_input(
-                    "Start Time", value=dtime(8, 0), key=f"s_{d}"
-                )
-                end_time = st.time_input(
-                    "End Time", value=dtime(17, 0), key=f"e_{d}"
-                )
+    if (is_travelling or is_standby) and not comment:
+        st.warning("Mohon isi Activity / Work Description")
+        submit_disabled = True
 
-                # =========================
-                # 🔥 PEMANGGILAN calculate_co
-                # =========================
-                co, day_type = calculate_co(
-                    category=category,
+    
+    if "co_submitted" not in st.session_state:
+        st.session_state["co_submitted"] = False
+
+    # =====================================
+    # SUBMIT
+    # =====================================
+    if st.button("Submit Change Off", disabled=submit_disabled or
+    st.session_state["co_submitted"]):
+
+        folder = f"uploads/change_off/{user_id}"
+        os.makedirs(folder, exist_ok=True)
+        fname = f"CO_{user_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
+        fpath = os.path.join(folder, fname)
+
+        with open(fpath, "wb") as f:
+            f.write(uploaded.getbuffer())
+
+        hours = (
+            datetime.combine(work_date, end_time)
+            - datetime.combine(work_date, start_time)
+        ).seconds / 3600
+
+        description = " | ".join(detail_notes)
+        if comment:
+            description += f" | {comment}"
+
+        cur.execute("""
+            INSERT INTO change_off_claims (
+                user_id, category, work_type, work_date,
+                daily_hours, co_days, description, attachment, status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'submitted')
+        """, (
+            user_id,
+            category,
+            work_type,
+            work_date.isoformat(),
+            hours,
+            round(total_co, 2),
+            description,
+            fpath
+        ))
+
+        conn.commit()
+
+        # EMAIL MANAGER
+        mgr = cur.execute("""
+            SELECT u.email
+            FROM users u
+            JOIN users e ON e.manager_id=u.id
+            WHERE e.id=?
+        """, (user_id,)).fetchone()
+
+        if mgr and mgr[0]:
+            send_email(
+                to_email=mgr[0],
+                subject="Change Off Claim Pending Approval",
+                body=change_off_request_email(
+                    emp_name=EMP_NAME,
                     work_type=work_type,
-                    work_date=d,
-                    start_time=start_time,
-                    end_time=end_time
-                )
+                    period=str(work_date),
+                    day_type=day_type,
+                    co_days=round(total_co, 2)
+                ),
+                html=True
+            )
 
-                st.info(f"CO Result: **{co} day(s)**")
-                st.caption(f"📅 Day Type: **{day_type.upper()}**")
-
-                daily_rows.append((d, co, day_type))
-                total_co += co
+        # RESET FORM
+        st.session_state["co_submitted"] = True
+        st.success("✅ Change Off submitted")
 
 
-        st.success(f"🧮 TOTAL CO: **{round(total_co, 2)} day(s)**")
 
-        if st.button("Submit Change Off"):
-            if not uploaded:
-                st.error("PDF wajib diupload")
-                st.stop()
-
-            if total_co <= 0:
-                st.error("Total CO = 0, tidak bisa diajukan")
-                st.stop()
-
-            folder = f"uploads/change_off/{user_id}"
-            os.makedirs(folder, exist_ok=True)
-            fname = f"CO_{user_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
-            fpath = os.path.join(folder, fname)
-
-            with open(fpath, "wb") as f:
-                f.write(uploaded.getbuffer())
-
-            for d, co, day_type in daily_rows:
-                if co <= 0:
-                    continue
-
-                # Calculate hours for each day
-                hours = (
-                    datetime.combine(d, dtime(17, 0))  # default end time
-                    - datetime.combine(d, dtime(8, 0))  # default start time
-                ).seconds / 3600
-
-                cur.execute("""
-                    INSERT INTO change_off_claims (
-                        user_id, category, work_type, work_date,
-                        daily_hours, co_days, description, attachment, status
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'submitted')
-                """, (
-                    user_id,
-                    category,
-                    work_type,
-                    d.isoformat(),
-                    hours,
-                    co,
-                    f"{work_type.upper()} ({day_type})",
-                    fpath
-                ))
-
-            conn.commit()
-
-            # EMAIL MANAGER
-            mgr = cur.execute("""
-                SELECT u.email
-                FROM users u
-                JOIN users e ON e.manager_id = u.id
-                WHERE e.id = ?
-            """, (user_id,)).fetchone()
-
-            if mgr and mgr[0]:
-                send_email(
-                    to_email=mgr[0],
-                    subject="Change Off Claim Pending Approval",
-                    body=change_off_request_email(
-                        emp_name=emp_name,
-                        work_type=work_type,
-                        period=str(work_date),
-                        co_days=co,
-                        day_type=day_type
-                    ),
-                    html=True
-                )
-
-            st.success("✅ Change Off submitted (multi-day)")
             
-
-
 
 # ======================================================
 # HISTORY

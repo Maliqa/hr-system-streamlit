@@ -2,14 +2,9 @@ from datetime import datetime, date, time
 from core.holiday import load_holidays
 
 
-
 # =========================
 # HELPER
 # =========================
-def is_holiday_or_weekend(d: date, holidays: set) -> bool:
-    return d.weekday() >= 5 or d in holidays
-
-
 def calc_hours(start_time: time, end_time: time) -> float:
     start = datetime.combine(date.today(), start_time)
     end = datetime.combine(date.today(), end_time)
@@ -18,6 +13,7 @@ def calc_hours(start_time: time, end_time: time) -> float:
         end = end.replace(day=end.day + 1)
 
     return round((end - start).seconds / 3600, 2)
+
 
 def get_day_type(work_date: date, holidays: set) -> str:
     """
@@ -29,11 +25,10 @@ def get_day_type(work_date: date, holidays: set) -> str:
     if work_date in holidays:
         return "holiday"
 
-    if work_date.weekday() >= 5:  # Saturday / Sunday
+    if work_date.weekday() >= 5:
         return "weekend"
 
     return "weekday"
-
 
 
 # =========================
@@ -44,7 +39,9 @@ def calculate_co(
     work_type: str,
     work_date: date,
     start_time: time,
-    end_time: time
+    end_time: time,
+    is_travelling: bool = False,   # ✅ OPTIONAL (checkbox)
+    is_standby: bool = False       # ✅ OPTIONAL (checkbox)
 ) -> tuple[float, str]:
 
     holidays = load_holidays()
@@ -54,44 +51,22 @@ def calculate_co(
     co = 0.0
 
     # =====================================================
-    # 1️⃣ TRAVELLING
+    # 1️⃣ BASE CO (PEKERJAAN UTAMA)
     # =====================================================
-    if work_type == "travelling":
-        if day_type == "weekday":
-            co = 0
-        else:  # weekend / holiday
-            if start_time < time(12, 0):
-                co = 1.0
-            else:
-                co = 0.5
 
-    # =====================================================
-    # 2️⃣ STANDBY (LUAR KOTA)
-    # =====================================================
-    elif work_type == "standby":
-        if day_type in ["weekend", "holiday"]:
-            co = 0.5
-        else:
-            co = 0
+    # --- TEKNISI / ENGINEER ---
+    if category == "Teknisi / Engineer":
 
-    # =====================================================
-    # 3️⃣ TEKNISI / ENGINEER — PROJECT
-    # =====================================================
-    elif category == "Teknisi / Engineer":
-
-        # --- 3 SHIFT ---
         if work_type == "3-shift":
             if day_type in ["weekend", "holiday"]:
                 co = 0.5
 
-        # --- 2 SHIFT ---
         elif work_type == "2-shift":
             if day_type == "weekday":
                 co = 0.5
             else:
                 co = 1.5
 
-        # --- NON SHIFT ---
         elif work_type == "non-shift":
             if day_type == "weekday":
                 if hours > 12:
@@ -102,9 +77,7 @@ def calculate_co(
                 else:
                     co = 2.0
 
-    # =====================================================
-    # 4️⃣ BACK OFFICE / WORKSHOP (NON PROJECT)
-    # =====================================================
+    # --- BACK OFFICE / WORKSHOP ---
     elif category == "Back Office / Workshop":
 
         if day_type == "weekday":
@@ -115,5 +88,22 @@ def calculate_co(
                 co = 1.0
             else:
                 co = 2.0
+
+    # =====================================================
+    # 2️⃣ BONUS CO (CHECKBOX TRAVELLING / STANDBY)
+    # Berlaku HANYA weekend / holiday
+    # =====================================================
+    if day_type in ["weekend", "holiday"]:
+
+        # --- STANDBY ---
+        if is_standby:
+            co += 0.5
+
+        # --- TRAVELLING ---
+        if is_travelling:
+            if start_time < time(12, 0):
+                co += 0.5
+            else:
+                co += 0.5
 
     return round(co, 2), day_type
