@@ -135,6 +135,12 @@ elif menu == MENU_LEAVE:
     st.subheader("➕ Submit Leave Request")
 
     # =========================
+    # SESSION STATE (ANTI DOUBLE SUBMIT)
+    # =========================
+    if "leave_submitted" not in st.session_state:
+        st.session_state.leave_submitted = False
+
+    # =========================
     # AMBIL SALDO
     # =========================
     saldo = cur.execute("""
@@ -151,16 +157,28 @@ elif menu == MENU_LEAVE:
     # =========================
     leave_type = st.selectbox(
         "Leave Type",
-        ["Personal Leave", "Change Off", "Sick (No Doc)"]
+        ["Personal Leave", "Change Off", "Sick (No Doc)"],
+        disabled=st.session_state.leave_submitted
     )
 
     c1, c2 = st.columns(2)
     with c1:
-        start_date = st.date_input("Start Date", date.today())
+        start_date = st.date_input(
+            "Start Date",
+            date.today(),
+            disabled=st.session_state.leave_submitted
+        )
     with c2:
-        end_date = st.date_input("End Date", date.today())
+        end_date = st.date_input(
+            "End Date",
+            date.today(),
+            disabled=st.session_state.leave_submitted
+        )
 
-    reason = st.text_area("Reason")
+    reason = st.text_area(
+        "Reason",
+        disabled=st.session_state.leave_submitted
+    )
 
     # =========================
     # VALIDASI TANGGAL
@@ -175,7 +193,7 @@ elif menu == MENU_LEAVE:
     # =========================
     # LOGIC DISABLE SUBMIT
     # =========================
-    submit_disabled = False
+    submit_disabled = st.session_state.leave_submitted
 
     if leave_type == "Personal Leave":
         if saldo_personal < total_days:
@@ -207,7 +225,7 @@ elif menu == MENU_LEAVE:
         st.info("ℹ️ Sick Leave tidak menggunakan saldo cuti.")
 
     # =========================
-    # SUBMIT BUTTON (AUTO DISABLE)
+    # SUBMIT BUTTON (AUTO DISABLE SETELAH SUCCESS)
     # =========================
     submit = st.button(
         "Submit Leave",
@@ -251,10 +269,11 @@ elif menu == MENU_LEAVE:
                 html=True
             )
 
-        st.success("✅ Leave submitted")
-
-
-
+        # 🔒 KUNCI FORM & BUTTON
+        st.session_state.leave_submitted = True
+        st.rerun()
+        if st.session_state.leave_submitted:
+           st.success("✅ Leave submitted")
 
 # ======================================================
 # SUBMIT CHANGE OFF CLAIM (REVISED – CHECKBOX BONUS)
@@ -288,7 +307,6 @@ elif menu == MENU_CO:
 
     with coly:
         is_standby = st.checkbox("🕒 Standby (Luar Kota)")
-
 
     # =====================================
     # MODE SINGLE DAY
@@ -356,24 +374,17 @@ elif menu == MENU_CO:
         st.warning("Mohon isi Activity / Work Description")
         submit_disabled = True
 
-    
     if "co_submitted" not in st.session_state:
         st.session_state["co_submitted"] = False
 
     # =====================================
-    # SUBMIT
+    # SUBMIT BUTTON & LOGIC
     # =====================================
-    if st.button("Submit Change Off", disabled=submit_disabled or
-    st.session_state["co_submitted"]):
-
-        folder = f"uploads/change_off/{user_id}"
-        os.makedirs(folder, exist_ok=True)
-        fname = f"CO_{user_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
-        fpath = os.path.join(folder, fname)
-
-        with open(fpath, "wb") as f:
-            f.write(uploaded.getbuffer())
-
+    if st.button(
+        "Submit Change Off",
+        disabled=submit_disabled or st.session_state.co_submitted
+    ):
+        # Proses jika tombol ditekan dan semua validasi lolos
         hours = (
             datetime.combine(work_date, end_time)
             - datetime.combine(work_date, start_time)
@@ -385,10 +396,16 @@ elif menu == MENU_CO:
 
         cur.execute("""
             INSERT INTO change_off_claims (
-                user_id, category, work_type, work_date,
-                daily_hours, co_days, description, attachment, status
+                user_id,
+                category,
+                work_type,
+                work_date,
+                daily_hours,
+                co_days,
+                description,
+                status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'submitted')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             user_id,
             category,
@@ -397,12 +414,12 @@ elif menu == MENU_CO:
             hours,
             round(total_co, 2),
             description,
-            fpath
+            "submitted"
         ))
 
         conn.commit()
 
-        # EMAIL MANAGER
+        # --- EMAIL MANAGER ---
         mgr = cur.execute("""
             SELECT u.email
             FROM users u
@@ -411,22 +428,28 @@ elif menu == MENU_CO:
         """, (user_id,)).fetchone()
 
         if mgr and mgr[0]:
-            send_email(
-                to_email=mgr[0],
-                subject="Change Off Claim Pending Approval",
-                body=change_off_request_email(
-                    emp_name=EMP_NAME,
-                    work_type=work_type,
-                    period=str(work_date),
-                    day_type=day_type,
-                    co_days=round(total_co, 2)
-                ),
-                html=True
-            )
+            try:
+                send_email(
+                    to_email=mgr[0],
+                    subject="Change Off Claim Pending Approval",
+                    body=change_off_request_email(
+                        emp_name=EMP_NAME,
+                        work_type=work_type,
+                        period=str(work_date),
+                        day_type=day_type,
+                        co_days=round(total_co, 2)
+                    ),
+                    html=True
+                )
+            except Exception as e:
+                st.warning(f"⚠️ Email ke manager gagal dikirim: {e}")
 
-        # RESET FORM
+        # --- RESET FORM ---
         st.session_state["co_submitted"] = True
         st.success("✅ Change Off submitted")
+        st.rerun()
+
+
 
 
 

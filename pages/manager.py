@@ -1,9 +1,14 @@
 import streamlit as st
+import pandas as pd
+from datetime import datetime
+
 from utils.api import api_get, api_post
+from utils.emailer import send_email
+from utils.ui import load_css
+
 from core.db import get_conn
 from core.leave_engine import run_leave_engine
-from utils.ui import load_css
-import pandas as pd
+
 
 # ======================================================
 # PAGE CONFIG
@@ -36,6 +41,7 @@ section[data-testid="stSidebar"] { display: none; }
 </style>
 """, unsafe_allow_html=True)
 
+
 # ======================================================
 # AUTH
 # ======================================================
@@ -62,6 +68,17 @@ if not manager_id:
 # ======================================================
 run_leave_engine()
 conn = get_conn()
+
+
+# ======================================================
+# HELPER
+# ======================================================
+def get_hr_emails(conn):
+    rows = conn.execute(
+        "SELECT email FROM users WHERE role='hr'"
+    ).fetchall()
+    return [r[0] for r in rows]
+
 
 # ======================================================
 # MANAGER PROFILE
@@ -93,11 +110,9 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+
 # ======================================================
-# MY TEAM (DATAFRAME-LIKE, CLICKABLE)
-# ======================================================
-# ======================================================
-# MY TEAM (COMPACT DATAFRAME)
+# MY TEAM
 # ======================================================
 st.subheader("👥 My Team")
 
@@ -133,7 +148,6 @@ else:
         lambda x: "🔴" if x > 0 else "🟢"
     )
 
-    # ====== DATAFRAME VIEW ======
     st.dataframe(
         df_team[["email", "status", "total_pending"]]
         .rename(columns={
@@ -145,9 +159,6 @@ else:
         width="stretch"
     )
 
-    st.caption("🔴 = Ada pending approval | 🟢 = Tidak ada pending")
-
-    # ====== SELECT EMPLOYEE ======
     selectable = df_team[df_team["total_pending"] > 0]
 
     if not selectable.empty:
@@ -164,10 +175,9 @@ else:
             st.session_state["focus_user"] = int(selected_user["user_id"])
             st.rerun()
 
-            st.markdown('</div>', unsafe_allow_html=True)
 
 # ======================================================
-# PENDING APPROVALS PER EMPLOYEE
+# PENDING APPROVALS
 # ======================================================
 focus_user = st.session_state.get("focus_user")
 
@@ -178,10 +188,13 @@ if focus_user:
     ).fetchone()
 
     if emp:
-        st.divider()
-        st.subheader(f"📨 Pending Approvals — {emp[1]}")
+        emp_name, emp_email = emp
+        hr_emails = get_hr_emails(conn)
 
-        # ---------- LEAVE REQUESTS ----------
+        st.divider()
+        st.subheader(f"📨 Pending Approvals — {emp_email}")
+
+        # ================= LEAVE REQUEST =================
         leave_rows = conn.execute("""
             SELECT id, leave_type, start_date, end_date, total_days, reason
             FROM leave_requests
@@ -197,8 +210,9 @@ if focus_user:
                     expanded=True
                 ):
                     st.write(reason or "-")
-
                     c1, c2 = st.columns(2)
+
+                    recipients = [emp_email] + hr_emails
 
                     if c1.button("✅ Approve", key=f"leave_ok_{lr_id}"):
                         conn.execute("""
@@ -209,6 +223,24 @@ if focus_user:
                             WHERE id=?
                         """, (manager_id, lr_id))
                         conn.commit()
+
+                        send_email(
+                            to_email=recipients,
+                            subject="Leave Request Approved",
+                            body=f"""
+Hi {emp_name},
+
+Your leave request has been APPROVED.
+
+Leave Type : {typ}
+Period     : {s} to {e}
+Total Days : {days}
+
+Regards,
+HR System
+"""
+                        )
+                        st.success("Leave approved & notification sent")
                         st.rerun()
 
                     if c2.button("❌ Reject", key=f"leave_rej_{lr_id}"):
@@ -220,11 +252,30 @@ if focus_user:
                             WHERE id=?
                         """, (manager_id, lr_id))
                         conn.commit()
+
+                        send_email(
+                            to_email=recipients,
+                            subject="Leave Request Rejected",
+                            body=f"""
+Hi {emp_name},
+
+Your leave request has been REJECTED.
+
+Leave Type : {typ}
+Period     : {s} to {e}
+
+Please contact your manager or HR.
+
+Regards,
+HR System
+"""
+                        )
+                        st.warning("Leave rejected & notification sent")
                         st.rerun()
         else:
             st.info("No pending Leave Requests.")
 
-        # ---------- CHANGE OFF CLAIMS ----------
+        # ================= CHANGE OFF =================
         co_rows = conn.execute("""
             SELECT id, work_type, work_date, co_days, description
             FROM change_off_claims
@@ -241,8 +292,9 @@ if focus_user:
                 ):
                     st.write(f"📅 Date: {d}")
                     st.write(f"📝 {desc or '-'}")
-
                     c1, c2 = st.columns(2)
+
+                    recipients = [emp_email] + hr_emails
 
                     if c1.button("✅ Approve", key=f"co_ok_{cid}"):
                         conn.execute("""
@@ -253,6 +305,24 @@ if focus_user:
                             WHERE id=?
                         """, (manager_id, cid))
                         conn.commit()
+
+                        send_email(
+                            to_email=recipients,
+                            subject="Change Off Claim Approved",
+                            body=f"""
+Hi {emp_name},
+
+Your Change Off claim has been APPROVED.
+
+Work Type : {wt}
+Date      : {d}
+CO Days   : {co}
+
+Regards,
+HR System
+"""
+                        )
+                        st.success("Change Off approved & notification sent")
                         st.rerun()
 
                     if c2.button("❌ Reject", key=f"co_rej_{cid}"):
@@ -264,6 +334,25 @@ if focus_user:
                             WHERE id=?
                         """, (manager_id, cid))
                         conn.commit()
+
+                        send_email(
+                            to_email=recipients,
+                            subject="Change Off Claim Rejected",
+                            body=f"""
+Hi {emp_name},
+
+Your Change Off claim has been REJECTED.
+
+Work Type : {wt}
+Date      : {d}
+
+Please contact your manager or HR.
+
+Regards,
+HR System
+"""
+                        )
+                        st.warning("Change Off rejected & notification sent")
                         st.rerun()
         else:
             st.info("No pending Change Off Claims.")
