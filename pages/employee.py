@@ -275,185 +275,221 @@ elif menu == MENU_LEAVE:
         if st.session_state.leave_submitted:
            st.success("✅ Leave submitted")
 
-# ======================================================
-# SUBMIT CHANGE OFF CLAIM (REVISED – CHECKBOX BONUS)
-# ======================================================
 elif menu == MENU_CO:
-    st.subheader("📦 Submit Change Off Claim")
+    st.subheader("📦 Submit Change Off Claim (Bulk / Monthly)")
+
+    # ======================================================
+    # SESSION STATE (LOCK FORM)
+    # ======================================================
+    if "co_submitted" not in st.session_state:
+        st.session_state.co_submitted = False
+
+    is_locked = st.session_state.co_submitted
 
     holidays = load_holidays()
 
-    # =====================================
-    # BASIC INPUT
-    # =====================================
+    # ======================================================
+    # BASIC SETUP
+    # ======================================================
     category = st.selectbox(
         "Employee Category",
-        ["Teknisi / Engineer", "Back Office / Workshop"]
+        ["Teknisi / Engineer", "Back Office / Workshop"],
+        disabled=is_locked
     )
 
-    work_type = st.selectbox(
-        "Main Work Type",
-        ["non-shift", "2-shift", "3-shift", "back-office"]
+    if category == "Teknisi / Engineer":
+        work_type = st.selectbox(
+            "Main Work Type",
+            ["non-shift", "2-shift", "3-shift"],
+            disabled=is_locked
+        )
+    else:
+        work_type = "back-office"
+        st.info("Main Work Type: Back Office")
+
+    month = st.date_input(
+        "Select Month",
+        date.today(),
+        disabled=is_locked
     )
 
-    # =====================================
-    # OPTIONAL ACTIVITY (CHECKBOX)
-    # =====================================
-    st.markdown("### ➕ Additional Activity (Optional)")
-    colx, coly = st.columns(2)
+    start_date = month.replace(day=1)
+    end_date = (
+        start_date.replace(month=start_date.month + 1)
+        if start_date.month < 12
+        else start_date.replace(year=start_date.year + 1, month=1)
+    ) - timedelta(days=1)
 
-    with colx:
-        is_travelling = st.checkbox("✈️ Travelling")
+    st.caption(f"📅 Period: {start_date} → {end_date}")
 
-    with coly:
-        is_standby = st.checkbox("🕒 Standby (Luar Kota)")
+    # ======================================================
+    # DATA CONTAINER
+    # ======================================================
+    rows = []
+    total_co = 0.0
 
-    # =====================================
-    # MODE SINGLE DAY
-    # =====================================
-    st.markdown("### 📅 Work Detail")
+    # ======================================================
+    # PER-DAY INPUT (SPREADSHEET STYLE)
+    # ======================================================
+    for i in range((end_date - start_date).days + 1):
+        d = start_date + timedelta(days=i)
 
-    work_date = st.date_input("Work Date", key="co_date")
-    start_time = st.time_input("Start Time", value=dtime(8, 0))
-    end_time = st.time_input("End Time", value=dtime(17, 0))
+        with st.expander(f"📅 {d}", expanded=False):
 
-    comment = st.text_area(
-        "📝 Activity / Work Description",
-        placeholder="Contoh: Maintenance panel / Travelling site A ke B"
-    )
-
-    # =====================================
-    # MAIN CO CALCULATION (BASE)
-    # =====================================
-    co_base, day_type = calculate_co(
-        category=category,
-        work_type=work_type,
-        work_date=work_date,
-        start_time=start_time,
-        end_time=end_time
-    )
-
-    total_co = co_base
-    detail_notes = [f"{work_type.upper()} ({day_type})"]
-
-    # =====================================
-    # ADDITIONAL TRAVELLING
-    # =====================================
-    if is_travelling:
-        if day_type in ["weekend", "holiday"]:
-            if start_time < dtime(12, 0):
-                total_co += 0.5
-                detail_notes.append("Travelling < 12:00 (+0.5)")
-            else:
-                total_co += 0.5
-                detail_notes.append("Travelling > 12:00 (+0.5)")
-
-    # =====================================
-    # ADDITIONAL STANDBY
-    # =====================================
-    if is_standby and day_type in ["weekend", "holiday"]:
-        total_co += 0.5
-        detail_notes.append("Standby (+0.5)")
-
-    # =====================================
-    # DISPLAY RESULT
-    # =====================================
-    st.info(f"🧮 Total Change Off: **{round(total_co, 2)} day(s)**")
-    st.caption(" | ".join(detail_notes))
-
-    # =====================================
-    # VALIDATION
-    # =====================================
-    submit_disabled = False
-
-    if total_co <= 0:
-        st.warning("Tidak ada CO yang bisa diklaim")
-        submit_disabled = True
-
-    if (is_travelling or is_standby) and not comment:
-        st.warning("Mohon isi Activity / Work Description")
-        submit_disabled = True
-
-    if "co_submitted" not in st.session_state:
-        st.session_state["co_submitted"] = False
-
-    # =====================================
-    # SUBMIT BUTTON & LOGIC
-    # =====================================
-    if st.button(
-        "Submit Change Off",
-        disabled=submit_disabled or st.session_state.co_submitted
-    ):
-        # Proses jika tombol ditekan dan semua validasi lolos
-        hours = (
-            datetime.combine(work_date, end_time)
-            - datetime.combine(work_date, start_time)
-        ).seconds / 3600
-
-        description = " | ".join(detail_notes)
-        if comment:
-            description += f" | {comment}"
-
-        cur.execute("""
-            INSERT INTO change_off_claims (
-                user_id,
-                category,
-                work_type,
-                work_date,
-                daily_hours,
-                co_days,
-                description,
-                status
+            start_time = st.time_input(
+                "Start Time",
+                dtime(8, 0),
+                key=f"st_{d}",
+                disabled=is_locked
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            user_id,
-            category,
-            work_type,
-            work_date.isoformat(),
-            hours,
-            round(total_co, 2),
-            description,
-            "submitted"
-        ))
+            end_time = st.time_input(
+                "End Time",
+                dtime(17, 0),
+                key=f"et_{d}",
+                disabled=is_locked
+            )
 
-        conn.commit()
+            activity = st.text_area(
+                "📝 Activity / Work Description",
+                key=f"act_{d}",
+                disabled=is_locked
+            )
 
-        # --- EMAIL MANAGER ---
-        mgr = cur.execute("""
-            SELECT u.email
-            FROM users u
-            JOIN users e ON e.manager_id=u.id
-            WHERE e.id=?
-        """, (user_id,)).fetchone()
+            with st.expander("➕ Additional Activity"):
+                is_travelling = st.checkbox(
+                    "✈️ Travelling",
+                    key=f"trav_{d}",
+                    disabled=is_locked
+                )
+                is_standby = st.checkbox(
+                    "🕒 Standby (Luar Kota)",
+                    key=f"stand_{d}",
+                    disabled=is_locked
+                )
 
-        if mgr and mgr[0]:
-            try:
+            # ==================================================
+            # VALIDASI → JANGAN HITUNG JIKA KOSONG
+            # ==================================================
+            if not activity.strip() and not is_travelling and not is_standby:
+                st.caption("⏭ Tidak ada activity → dilewati")
+                continue
+
+            # ==================================================
+            # CALCULATE (FINAL RULE)
+            # ==================================================
+            co, day_type, hours = calculate_co(
+                category=category,
+                work_type=work_type,
+                work_date=d,
+                start_time=start_time,
+                end_time=end_time,
+                travelling=is_travelling,
+                standby=is_standby
+            )
+
+            if co <= 0:
+                st.caption("⚠️ CO = 0 → tidak diklaim")
+                continue
+
+            rows.append({
+                "Date": d,
+                "Hours": hours,
+                "CO": co,
+                "Detail": activity
+            })
+
+            total_co += co
+
+    # ======================================================
+    # SUMMARY
+    # ======================================================
+    st.divider()
+    st.subheader("📊 Summary")
+
+    if rows:
+        df = pd.DataFrame(rows)
+        st.dataframe(df, hide_index=True)
+        st.success(f"TOTAL CHANGE OFF: {round(total_co, 2)} day(s)")
+    else:
+        st.info("Belum ada activity yang diklaim")
+
+    # ======================================================
+    # SUBMIT (LOCKED AFTER SUCCESS)
+    # ======================================================
+    if is_locked:
+        st.info("Menunggu approval Manager.")
+    else:
+        submit_clicked = st.button(
+            "Submit Change Off Claim",
+            key="submit_co_btn",
+            disabled=not rows
+        )
+
+        if submit_clicked:
+            # HARD GUARD
+            if st.session_state.co_submitted:
+                st.warning("⚠️ Claim sudah pernah disubmit.")
+                st.stop()
+
+            for r in rows:
+                cur.execute("""
+                    INSERT INTO change_off_claims (
+                        user_id,
+                        category,
+                        work_type,
+                        work_date,
+                        daily_hours,
+                        co_days,
+                        description,
+                        status
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'submitted')
+                """, (
+                    user_id,
+                    category,
+                    work_type,
+                    r["Date"].isoformat(),
+                    r["Hours"],
+                    r["CO"],
+                    r["Detail"]
+                ))
+
+            conn.commit()
+
+            # ==================================================
+            # EMAIL MANAGER
+            # ==================================================
+            mgr = cur.execute("""
+                SELECT u.email
+                FROM users u
+                JOIN users e ON e.manager_id = u.id
+                WHERE e.id = ?
+            """, (user_id,)).fetchone()
+
+            if mgr and mgr[0]:
                 send_email(
                     to_email=mgr[0],
                     subject="Change Off Claim Pending Approval",
                     body=change_off_request_email(
                         emp_name=EMP_NAME,
                         work_type=work_type,
-                        period=str(work_date),
-                        day_type=day_type,
-                        co_days=round(total_co, 2)
+                        period=f"{start_date} → {end_date}",
+                        co_days=round(total_co, 2),
+                        day_type="bulk"
                     ),
                     html=True
                 )
-            except Exception as e:
-                st.warning(f"⚠️ Email ke manager gagal dikirim: {e}")
 
-        # --- RESET FORM ---
-        st.session_state["co_submitted"] = True
-        st.success("✅ Change Off submitted")
-        st.rerun()
-
-
-
+            # ==================================================
+            # LOCK FORM
+            # ==================================================
+            st.session_state.co_submitted = True
+            st.success("✅ Change Off submitted successfully")
+            st.info("Menunggu approval Manager.")
+            st.rerun()
 
 
-            
+                
 
 # ======================================================
 # HISTORY
